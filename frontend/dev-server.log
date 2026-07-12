@@ -1,0 +1,15 @@
+
+> my-project@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.6 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://10.94.131.112:3000
+✓ Ready in 2.5s
+Creating turbopack project {
+  dir: 'C:\\Users\\PUSHT\\Downloads\\raahi-personal-safety-app\\frontend',
+  testMode: true
+}
+
+○ Compiling / ...
+ GET / 200 in 8.0s (next.js: 7.2s, application-code: 717ms)

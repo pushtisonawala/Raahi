@@ -1,0 +1,109 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import 'tailwindcss';
+@import 'shadcn/tailwind.css';
+
+@theme {
+  --font-sans: 'IBM Plex Sans';
+  --font-mono: 'IBM Plex Mono';
+  
+  /* Raahi Color Palette */
+  --color-ink-indigo: #1B2340;
+  --color-twilight-plum: #3D2F63;
+  --color-beacon-amber: #FFB648;
+  --color-safe-teal: #48D1B8;
+  --color-alert-coral: #FF4B5C;
+  --color-dawn-mist: #F1F3F8;
+  
+  /* Base semantic colors */
+  --color-background: #ffffff;
+  --color-foreground: #1B2340;
+  --color-card: #F1F3F8;
+  --color-card-foreground: #1B2340;
+  --color-muted: #E5E8F0;
+  --color-muted-foreground: #556B92;
+  --color-border: #E5E8F0;
+  --color-input: #F1F3F8;
+  
+  --radius: 0.75rem;
+}
+
+
+
+@layer base {
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  /* Focus states */
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible {
+    @apply outline-2 outline-offset-2 outline-beacon-amber;
+  }
+
+  /* Smooth transitions */
+  button,
+  a,
+  [role="button"] {
+    @apply transition-colors duration-200;
+  }
+
+  /* Respect prefers-reduced-motion */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* Custom animations for beacon */
+@keyframes beacon-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes beacon-glow {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 182, 72, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 12px rgba(255, 182, 72, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 182, 72, 0);
+  }
+}
+
+@keyframes path-travel {
+  0% {
+    stroke-dashoffset: 1000;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes glow-path {
+  0% {
+    opacity: 0;
+    stroke-dashoffset: 1000;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.8;
+    stroke-dashoffset: 0;
+  }
+}
