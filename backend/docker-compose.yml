@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: raahi
+      POSTGRES_PASSWORD: raahi_dev
+      POSTGRES_DB: raahi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://raahi:raahi_dev@postgres:5432/raahi?sslmode=disable
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:
