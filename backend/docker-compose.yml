@@ -6,9 +6,14 @@ services:
       POSTGRES_PASSWORD: raahi_dev
       POSTGRES_DB: raahi
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raahi -d raahi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   api:
     build: .
@@ -16,8 +21,10 @@ services:
       - "8080:8080"
     environment:
       DATABASE_URL: postgres://raahi:raahi_dev@postgres:5432/raahi?sslmode=disable
+      JWT_SECRET: some-long-random-string-change-this-later
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
 volumes:
   pgdata:
