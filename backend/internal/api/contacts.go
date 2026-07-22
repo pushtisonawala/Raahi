@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
 )
 
@@ -78,4 +79,48 @@ func ListContactHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(contacts)
 
+}
+func UpdateContact(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	contactID := chi.URLParam(r, "id")
+	var req createContactRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	tag, err := db.Pool.Exec(r.Context(),
+		`UPDATE contacts SET name = $1, phone = $2, relationship = $3 WHERE id = $4 AND user_id = $5`,
+		req.Name, req.Phone, req.Relationship, contactID, userID,
+	)
+	if err != nil {
+		http.Error(w, "failed to update contact", http.StatusInternalServerError)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		http.Error(w, "contact not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
+}
+func DeleteContactHandler(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	contactID := chi.URLParam(r, "id")
+
+	tag, err := db.Pool.Exec(r.Context(),
+		`DELETE FROM contacts WHERE id = $1 AND user_id = $2`,
+		contactID, userID,
+	)
+	if err != nil {
+		http.Error(w, "failed to delete contact", http.StatusInternalServerError)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		http.Error(w, "contact not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 }
