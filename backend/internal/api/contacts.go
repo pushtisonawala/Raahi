@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
 )
@@ -44,4 +45,37 @@ func CreateContactHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"id": newID})
+}
+func ListContactHandler(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	rows, err := db.Pool.Query(r.Context(),
+		`SELECT id, user_id, name, phone, relationship, created_at FROM contacts WHERE user_id = $1 ORDER BY created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		http.Error(w, "failed to fetch contacts", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	contacts := []map[string]interface{}{}
+	for rows.Next() {
+		var id, uid, name, phone, relationship string
+		var createdAt time.Time
+		if err := rows.Scan(&id, &uid, &name, &phone, &relationship, &createdAt); err != nil {
+			http.Error(w, "failed to read contacts", http.StatusInternalServerError)
+			return
+		}
+		contacts = append(contacts, map[string]interface{}{
+			"id":           id,
+			"user_id":      uid,
+			"name":         name,
+			"phone":        phone,
+			"relationship": relationship,
+			"created_at":   createdAt,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(contacts)
+
 }
