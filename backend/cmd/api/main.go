@@ -27,6 +27,7 @@ func main() {
 
 	r.Post("/signup", api.SignupHandler)
 	r.Post("/login", api.LoginHandler)
+	r.With(api.RequireAuth).Post("/contacts", api.CreateContactHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
