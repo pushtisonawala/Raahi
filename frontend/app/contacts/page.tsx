@@ -3,14 +3,16 @@
 import { useState } from 'react'
 import { Header } from '@/components/header'
 import { useContacts } from '@/lib/hooks'
-import { Trash2, Plus, Edit2, X } from 'lucide-react'
+import { AlertCircle, Edit2, LoaderCircle, Plus, RefreshCw, Trash2, X } from 'lucide-react'
 import type { Contact } from '@/lib/types'
 
 export default function ContactsPage() {
-  const { contacts, addContact, updateContact, deleteContact } = useContacts()
+  const { contacts, addContact, updateContact, deleteContact, loading, error, refresh } = useContacts()
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [formData, setFormData] = useState({ name: '', phone: '', relationship: '' })
+  const [saving, setSaving] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const handleOpen = (contact?: Contact) => {
     if (contact) {
@@ -29,16 +31,31 @@ export default function ContactsPage() {
     setFormData({ name: '', phone: '', relationship: '' })
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!formData.name || !formData.phone) return
 
-    if (editingId) {
-      updateContact(editingId, formData)
-    } else {
-      addContact(formData)
+    setSaving(true)
+    try {
+      if (editingId) await updateContact(editingId, formData)
+      else await addContact(formData)
+      handleClose()
+    } catch {
+      // The hook exposes the server error next to the form.
+    } finally {
+      setSaving(false)
     }
-    handleClose()
+  }
+
+  const handleDelete = async (id: string) => {
+    setDeletingId(id)
+    try {
+      await deleteContact(id)
+    } catch {
+      // The hook exposes the server error above the contact list.
+    } finally {
+      setDeletingId(null)
+    }
   }
 
   return (
@@ -54,6 +71,7 @@ export default function ContactsPage() {
           </div>
           <button
             onClick={() => handleOpen()}
+            disabled={loading}
             className="flex items-center gap-2 px-4 py-2 bg-beacon-amber text-ink-indigo font-semibold rounded-lg hover:bg-amber-500 transition-colors"
           >
             <Plus size={20} />
@@ -61,8 +79,29 @@ export default function ContactsPage() {
           </button>
         </div>
 
+        {error && (
+          <div className="mb-6 flex items-center gap-3 rounded-lg border border-alert-coral/30 bg-alert-coral/10 p-4 text-sm" role="alert">
+            <AlertCircle className="shrink-0 text-alert-coral" size={20} />
+            <p className="flex-1 text-foreground">{error}</p>
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              className="p-2 text-alert-coral hover:bg-alert-coral/10 rounded-md"
+              aria-label="Retry loading contacts"
+              title="Retry"
+            >
+              <RefreshCw size={18} />
+            </button>
+          </div>
+        )}
+
         {/* Contacts Grid */}
-        {contacts.length > 0 ? (
+        {loading ? (
+          <div className="flex min-h-48 items-center justify-center" role="status">
+            <LoaderCircle className="animate-spin text-beacon-amber" size={28} />
+            <span className="sr-only">Loading contacts</span>
+          </div>
+        ) : contacts.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {contacts.map((contact) => (
               <div
@@ -82,11 +121,12 @@ export default function ContactsPage() {
                       <Edit2 size={16} />
                     </button>
                     <button
-                      onClick={() => deleteContact(contact.id)}
+                      onClick={() => void handleDelete(contact.id)}
+                      disabled={deletingId === contact.id}
                       className="p-2 hover:bg-alert-coral/10 text-alert-coral rounded-md transition-colors"
                       aria-label="Delete contact"
                     >
-                      <Trash2 size={16} />
+                      {deletingId === contact.id ? <LoaderCircle className="animate-spin" size={16} /> : <Trash2 size={16} />}
                     </button>
                   </div>
                 </div>
@@ -175,15 +215,17 @@ export default function ContactsPage() {
                 <button
                   type="button"
                   onClick={handleClose}
+                  disabled={saving}
                   className="flex-1 px-4 py-2 border border-border rounded-lg font-semibold hover:bg-muted transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
+                  disabled={saving}
                   className="flex-1 px-4 py-2 bg-beacon-amber text-ink-indigo rounded-lg font-semibold hover:bg-amber-500 transition-colors"
                 >
-                  {editingId ? 'Update' : 'Add'}
+                  {saving ? 'Saving...' : editingId ? 'Update' : 'Add'}
                 </button>
               </div>
             </form>

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { ArrowRight, MapPin } from 'lucide-react'
+import { AlertCircle, ArrowRight, LoaderCircle, MapPin, RefreshCw } from 'lucide-react'
 import { Header } from '@/components/header'
 import { SOSButton } from '@/components/sos-button'
 import { StatusBadge } from '@/components/status-badge'
@@ -10,7 +10,7 @@ import { BeaconDot } from '@/components/beacon-dot'
 import { useContacts, useSessions } from '@/lib/hooks'
 
 export function Dashboard() {
-  const { contacts } = useContacts()
+  const { contacts, loading: contactsLoading, error: contactsError, refresh } = useContacts()
   const { sessions } = useSessions()
   const [mounted, setMounted] = useState(false)
 
@@ -59,7 +59,26 @@ export function Dashboard() {
         {/* Trusted Contacts */}
         <section className="mb-12">
           <h2 className="text-2xl font-bold text-foreground mb-6">Trusted contacts</h2>
-          {displayContacts.length > 0 ? (
+          {contactsLoading ? (
+            <div className="flex min-h-32 items-center justify-center" role="status">
+              <LoaderCircle className="animate-spin text-beacon-amber" size={24} />
+              <span className="sr-only">Loading contacts</span>
+            </div>
+          ) : contactsError ? (
+            <div className="flex items-center gap-3 rounded-lg border border-alert-coral/30 bg-alert-coral/10 p-4">
+              <AlertCircle className="shrink-0 text-alert-coral" size={20} />
+              <p className="flex-1 text-sm text-foreground">{contactsError}</p>
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                className="p-2 text-alert-coral hover:bg-alert-coral/10 rounded-md"
+                aria-label="Retry loading contacts"
+                title="Retry"
+              >
+                <RefreshCw size={18} />
+              </button>
+            </div>
+          ) : displayContacts.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {displayContacts.map((contact) => (
                 <div

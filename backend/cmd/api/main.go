@@ -12,25 +12,29 @@ import (
 )
 
 func main() {
+	_ = godotenv.Load()
+
 	r := chi.NewRouter()
+	r.Use(api.CORS)
 	r.Get("/health", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
 	})
-
-	_ = godotenv.Load()
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		databaseURL = "postgres://raahi:raahi_dev@localhost:5432/raahi?sslmode=disable"
 	}
 	db.Connect(databaseURL)
+	defer db.Pool.Close()
+	db.Migrate()
 
 	r.Post("/signup", api.SignupHandler)
 	r.Post("/login", api.LoginHandler)
 	r.With(api.RequireAuth).Post("/contacts", api.CreateContactHandler)
 	r.With(api.RequireAuth).Get("/contacts", api.ListContactHandler)
 	r.With(api.RequireAuth).Put("/contacts/{id}", api.UpdateContact)
-r.With(api.RequireAuth).Delete("/contacts/{id}", api.DeleteContactHandler)
+	r.With(api.RequireAuth).Delete("/contacts/{id}", api.DeleteContactHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {

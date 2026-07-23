@@ -24,10 +24,15 @@ func RequireAuth(next http.Handler) http.Handler {
 		}
 
 		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		secret := os.Getenv("JWT_SECRET")
+		if secret == "" {
+			http.Error(w, "server misconfiguration", http.StatusInternalServerError)
+			return
+		}
 
 		token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
-			return []byte(os.Getenv("JWT_SECRET")), nil
-		})
+			return []byte(secret), nil
+		}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 
 		if err != nil || !token.Valid {
 			http.Error(w, "invalid or expired token", http.StatusUnauthorized)

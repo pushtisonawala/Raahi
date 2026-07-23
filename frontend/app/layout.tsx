@@ -1,6 +1,8 @@
 import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { IBM_Plex_Sans, IBM_Plex_Mono } from 'next/font/google'
+import { AuthGate } from '@/components/auth-gate'
+import { AuthProvider } from '@/lib/auth-context'
 import './globals.css'
 
 const ibmPlexSans = IBM_Plex_Sans({
@@ -44,7 +46,9 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${ibmPlexSans.variable} ${ibmPlexMono.variable}`}>
       <body className="bg-background text-foreground antialiased">
-        {children}
+        <AuthProvider>
+          <AuthGate>{children}</AuthGate>
+        </AuthProvider>
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>

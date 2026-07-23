@@ -2,11 +2,13 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Menu, X } from 'lucide-react'
+import { LogOut, Menu, X } from 'lucide-react'
 import { useState } from 'react'
+import { useAuth } from '@/lib/auth-context'
 
 export function Header() {
   const pathname = usePathname()
+  const { logout } = useAuth()
   const [menuOpen, setMenuOpen] = useState(false)
 
   const isActive = (path: string) => pathname === path
@@ -43,6 +45,16 @@ export function Header() {
           ))}
         </nav>
 
+        <button
+          type="button"
+          onClick={logout}
+          className="hidden md:flex p-2 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md"
+          aria-label="Sign out"
+          title="Sign out"
+        >
+          <LogOut size={20} />
+        </button>
+
         {/* Mobile menu button */}
         <button
           onClick={() => setMenuOpen(!menuOpen)}
@@ -70,6 +82,14 @@ export function Header() {
               {item.label}
             </Link>
           ))}
+          <button
+            type="button"
+            onClick={logout}
+            className="flex w-full items-center gap-2 px-4 py-2 rounded-md text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <LogOut size={18} />
+            Sign out
+          </button>
         </nav>
       )}
     </header>
