@@ -7,8 +7,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/joho/godotenv"
-	api "github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/api"
-	db "github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/api"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
 )
 
 func main() {
@@ -35,7 +35,9 @@ func main() {
 	r.With(api.RequireAuth).Get("/contacts", api.ListContactHandler)
 	r.With(api.RequireAuth).Put("/contacts/{id}", api.UpdateContact)
 	r.With(api.RequireAuth).Delete("/contacts/{id}", api.DeleteContactHandler)
-
+	r.With(api.RequireAuth).Post("/sessions", api.CreateSessionHandler)
+	r.With(api.RequireAuth).Get("/sessions", api.ListSessionsHandler)
+	r.With(api.RequireAuth).Get("/sessions/{id}", api.GetSessionHandler)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
