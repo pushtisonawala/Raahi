@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/api"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/sweeper"
 )
 
 func main() {
@@ -26,6 +28,8 @@ func main() {
 		databaseURL = "postgres://raahi:raahi_dev@localhost:5432/raahi?sslmode=disable"
 	}
 	db.Connect(databaseURL)
+	go sweeper.Run(context.Background(), db.Pool)
+
 	defer db.Pool.Close()
 	db.Migrate()
 

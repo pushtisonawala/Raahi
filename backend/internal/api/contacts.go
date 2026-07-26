@@ -12,6 +12,7 @@ import (
 type createContactRequest struct {
 	Name         string `json:"name"`
 	Phone        string `json:"phone"`
+	Email        string `json:"email"`
 	Relationship string `json:"relationship"`
 }
 
@@ -28,15 +29,15 @@ func CreateContactHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Name == "" || req.Phone == "" {
-		http.Error(w, "name and phone are required", http.StatusBadRequest)
+	if req.Name == "" || req.Phone == "" || req.Email == "" {
+		http.Error(w, "name, phone, and email are required", http.StatusBadRequest)
 		return
 	}
 
 	var newID string
 	err := db.Pool.QueryRow(r.Context(),
-		`INSERT INTO contacts (user_id, name, phone, relationship) VALUES ($1, $2, $3, $4) RETURNING id`,
-		userID, req.Name, req.Phone, req.Relationship,
+		`INSERT INTO contacts (user_id, name, phone, email, relationship) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		userID, req.Name, req.Phone, req.Email, req.Relationship,
 	).Scan(&newID)
 	if err != nil {
 		http.Error(w, "failed to create contact", http.StatusInternalServerError)
@@ -50,7 +51,7 @@ func CreateContactHandler(w http.ResponseWriter, r *http.Request) {
 func ListContactHandler(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 	rows, err := db.Pool.Query(r.Context(),
-		`SELECT id, user_id, name, phone, relationship, created_at FROM contacts WHERE user_id = $1 ORDER BY created_at DESC`,
+		`SELECT id, user_id, name, phone, email, relationship, created_at FROM contacts WHERE user_id = $1 ORDER BY created_at DESC`,
 		userID,
 	)
 	if err != nil {
@@ -60,9 +61,9 @@ func ListContactHandler(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	contacts := []map[string]interface{}{}
 	for rows.Next() {
-		var id, uid, name, phone, relationship string
+		var id, uid, name, phone, email, relationship string
 		var createdAt time.Time
-		if err := rows.Scan(&id, &uid, &name, &phone, &relationship, &createdAt); err != nil {
+		if err := rows.Scan(&id, &uid, &name, &phone, &email, &relationship, &createdAt); err != nil {
 			http.Error(w, "failed to read contacts", http.StatusInternalServerError)
 			return
 		}
@@ -71,6 +72,7 @@ func ListContactHandler(w http.ResponseWriter, r *http.Request) {
 			"user_id":      uid,
 			"name":         name,
 			"phone":        phone,
+			"email":        email,
 			"relationship": relationship,
 			"created_at":   createdAt,
 		})
@@ -89,8 +91,8 @@ func UpdateContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tag, err := db.Pool.Exec(r.Context(),
-		`UPDATE contacts SET name = $1, phone = $2, relationship = $3 WHERE id = $4 AND user_id = $5`,
-		req.Name, req.Phone, req.Relationship, contactID, userID,
+		`UPDATE contacts SET name = $1, phone = $2, email = $3, relationship = $4 WHERE id = $5 AND user_id = $6`,
+		req.Name, req.Phone, req.Email, req.Relationship, contactID, userID,
 	)
 	if err != nil {
 		http.Error(w, "failed to update contact", http.StatusInternalServerError)

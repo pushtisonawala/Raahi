@@ -10,16 +10,16 @@ export default function ContactsPage() {
   const { contacts, addContact, updateContact, deleteContact, loading, error, refresh } = useContacts()
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [formData, setFormData] = useState({ name: '', phone: '', relationship: '' })
+  const [formData, setFormData] = useState({ name: '', phone: '', email: '', relationship: '' })
   const [saving, setSaving] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const handleOpen = (contact?: Contact) => {
     if (contact) {
-      setFormData({ name: contact.name, phone: contact.phone, relationship: contact.relationship })
+      setFormData({ name: contact.name, phone: contact.phone, email: contact.email, relationship: contact.relationship })
       setEditingId(contact.id)
     } else {
-      setFormData({ name: '', phone: '', relationship: '' })
+      setFormData({ name: '', phone: '', email: '', relationship: '' })
       setEditingId(null)
     }
     setIsDrawerOpen(true)
@@ -28,12 +28,12 @@ export default function ContactsPage() {
   const handleClose = () => {
     setIsDrawerOpen(false)
     setEditingId(null)
-    setFormData({ name: '', phone: '', relationship: '' })
+    setFormData({ name: '', phone: '', email: '', relationship: '' })
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!formData.name || !formData.phone) return
+    if (!formData.name || !formData.phone || !formData.email) return
 
     setSaving(true)
     try {
@@ -135,6 +135,7 @@ export default function ContactsPage() {
                 <p className="text-xs font-mono text-muted-foreground bg-muted/50 p-2 rounded">
                   {contact.phone}
                 </p>
+                <p className="text-xs text-muted-foreground mt-2">{contact.email}</p>
               </div>
             ))}
           </div>
@@ -195,6 +196,18 @@ export default function ContactsPage() {
                   value={formData.phone}
                   onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                   placeholder="e.g., +1 (555) 123-4567"
+                  className="w-full px-4 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-beacon-amber"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-2">Email</label>
+                <input
+                  type="email"
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  placeholder="e.g., alex@example.com"
                   className="w-full px-4 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-beacon-amber"
                   required
                 />

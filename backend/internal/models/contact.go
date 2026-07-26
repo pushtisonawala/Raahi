@@ -7,6 +7,7 @@ type Contact struct {
 	UserID       string    `json:"user_id"`
 	Name         string    `json:"name"`
 	Phone        string    `json:"phone"`
+	Email        string    `json:"email"`
 	Relationship string    `json:"relationship"`
 	CreatedAt    time.Time `json:"created_at"`
 }

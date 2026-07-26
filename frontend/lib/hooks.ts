@@ -87,6 +87,7 @@ export function useContacts() {
             body: JSON.stringify({
               name: updated.name,
               phone: updated.phone,
+              email: updated.email,
               relationship: updated.relationship,
             }),
           },

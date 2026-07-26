@@ -36,9 +36,13 @@ func Migrate() {
 			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			phone TEXT NOT NULL,
+			email TEXT NOT NULL DEFAULT '',
 			relationship TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
+
+		ALTER TABLE contacts
+			ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT '';
 
 		CREATE INDEX IF NOT EXISTS contacts_user_id_created_at_idx
 			ON contacts (user_id, created_at DESC);
