@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/geo"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/ws"
 )
 
 type locationRequest struct {
@@ -68,6 +69,10 @@ func UpdateLocationHandler(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "failed to update checkpoint", http.StatusInternalServerError)
 				return
 			}
+			ws.GlobalHub.Broadcast(sessionID, map[string]string{
+				"type":          "checkpoint_reached",
+				"checkpoint_id": checkpointID,
+			})
 		}
 	}
 

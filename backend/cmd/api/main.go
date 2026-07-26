@@ -35,6 +35,7 @@ func main() {
 
 	r.Post("/signup", api.SignupHandler)
 	r.Post("/login", api.LoginHandler)
+	r.Get("/sessions/{id}/ws", api.SessionWebSocketHandler)
 	r.With(api.RequireAuth).Post("/contacts", api.CreateContactHandler)
 	r.With(api.RequireAuth).Get("/contacts", api.ListContactHandler)
 	r.With(api.RequireAuth).Put("/contacts/{id}", api.UpdateContact)
