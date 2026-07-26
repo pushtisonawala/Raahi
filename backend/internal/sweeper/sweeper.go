@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/notify"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/ws"
 )
 
 const (
@@ -33,17 +34,21 @@ func Run(ctx context.Context, pool *pgxpool.Pool) {
 	}
 }
 func sweepOnce(ctx context.Context, pool *pgxpool.Pool) {
-	rows, err := pool.Query(ctx, `UPDATE checkpoints SET status='overdue' WHERE status='pending' AND expected_time IS NOT NULL AND expected_time <= now() RETURNING id`)
+	rows, err := pool.Query(ctx, `UPDATE checkpoints SET status='overdue' WHERE status='pending' AND expected_time IS NOT NULL AND expected_time <= now() RETURNING id, session_id`)
 	if err != nil {
 		log.Printf("sweeper stage1 error: %v", err)
 	} else {
 		for rows.Next() {
-			var id string
-			if scanErr := rows.Scan(&id); scanErr != nil {
+			var id, sessionID string
+			if scanErr := rows.Scan(&id, &sessionID); scanErr != nil {
 				log.Printf("sweeper stage1 scan error: %v", scanErr)
 				continue
 			}
 			log.Printf("sweeper: checkpoint %s is now OVERDUE", id)
+			ws.GlobalHub.Broadcast(sessionID, map[string]string{
+				"type":          "checkpoint_overdue",
+				"checkpoint_id": id,
+			})
 			if emailErr := sendOverdueEmail(ctx, id); emailErr != nil {
 				log.Printf("sweeper email error for checkpoint %s: %v", id, emailErr)
 			}
@@ -54,17 +59,21 @@ func sweepOnce(ctx context.Context, pool *pgxpool.Pool) {
 	rows, err = pool.Query(ctx,
 		`UPDATE checkpoints SET status = 'pinged'
 		 WHERE status = 'overdue' AND expected_time <= now() - $1::interval
-		 RETURNING id`, gracePeriod1)
+		 RETURNING id, session_id`, gracePeriod1)
 	if err != nil {
 		log.Printf("sweeper stage2 error: %v", err)
 	} else {
 		for rows.Next() {
-			var id string
-			if scanErr := rows.Scan(&id); scanErr != nil {
+			var id, sessionID string
+			if scanErr := rows.Scan(&id, &sessionID); scanErr != nil {
 				log.Printf("sweeper stage2 scan error: %v", scanErr)
 				continue
 			}
 			log.Printf("sweeper: checkpoint %s PINGED - would send push notification here", id)
+			ws.GlobalHub.Broadcast(sessionID, map[string]string{
+				"type":          "checkpoint_pinged",
+				"checkpoint_id": id,
+			})
 		}
 		rows.Close()
 	}
@@ -72,13 +81,13 @@ func sweepOnce(ctx context.Context, pool *pgxpool.Pool) {
 	rows, err = pool.Query(ctx,
 		`UPDATE checkpoints SET status = 'contacts_alerted'
 		 WHERE status = 'pinged' AND expected_time <= now() - $1::interval
-		 RETURNING id`, gracePeriod1+gracePeriod2)
+		 RETURNING id, session_id`, gracePeriod1+gracePeriod2)
 	if err != nil {
 		log.Printf("sweeper stage3 error: %v", err)
 	} else {
 		for rows.Next() {
-			var id string
-			if scanErr := rows.Scan(&id); scanErr != nil {
+			var id, sessionID string
+			if scanErr := rows.Scan(&id, &sessionID); scanErr != nil {
 				log.Printf("sweeper stage3 scan error: %v", scanErr)
 				continue
 			}
@@ -86,6 +95,10 @@ func sweepOnce(ctx context.Context, pool *pgxpool.Pool) {
 			if contactErr := sendContactEmails(ctx, id); contactErr != nil {
 				log.Printf("sweeper contact email error for checkpoint %s: %v", id, contactErr)
 			}
+			ws.GlobalHub.Broadcast(sessionID, map[string]string{
+				"type":          "contacts_alerted",
+				"checkpoint_id": id,
+			})
 		}
 		rows.Close()
 	}
