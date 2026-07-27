@@ -6,6 +6,7 @@ import { Header } from '@/components/header'
 import { useSessions, useContacts } from '@/lib/hooks'
 import { ArrowRight, ArrowLeft, Plus, X, GripVertical } from 'lucide-react'
 import type { Checkpoint, Session } from '@/lib/types'
+import { geocodePlace, getRouteCheckpoints } from '@/lib/route'
 
 export default function SessionNewPage() {
   const router = useRouter()
@@ -19,6 +20,10 @@ export default function SessionNewPage() {
   const [selectedContacts, setSelectedContacts] = useState<string[]>([])
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([])
   const [newCheckpoint, setNewCheckpoint] = useState({ name: '', expectedTime: 10, lat: 0, lng: 0 })
+  const [routeStartPlace, setRouteStartPlace] = useState('')
+  const [routeEndPlace, setRouteEndPlace] = useState('')
+  const [isGeneratingCheckpoints, setIsGeneratingCheckpoints] = useState(false)
+  const [routeError, setRouteError] = useState<string | null>(null)
   const [draggedId, setDraggedId] = useState<string | null>(null)
 
   const handleAddCheckpoint = () => {
@@ -32,6 +37,52 @@ export default function SessionNewPage() {
     }
     setCheckpoints([...checkpoints, checkpoint])
     setNewCheckpoint({ name: '', expectedTime: 10, lat: 0, lng: 0 })
+  }
+
+  const handleGenerateCheckpoints = async () => {
+    if (!routeStartPlace.trim() || !routeEndPlace.trim()) {
+      setRouteError('Enter a start and end place first.')
+      return
+    }
+
+    setIsGeneratingCheckpoints(true)
+    setRouteError(null)
+
+    try {
+      const startPlace = await geocodePlace(routeStartPlace)
+      const endPlace = await geocodePlace(routeEndPlace)
+      setRoute(`${startPlace.name} to ${endPlace.name}`)
+
+      const generated = await getRouteCheckpoints(startPlace.lat, startPlace.lng, endPlace.lat, endPlace.lng, new Date())
+      if (generated.length === 0) {
+        setRouteError('No checkpoints were generated for that route.')
+        return
+      }
+
+      const generatedCheckpoints: Checkpoint[] = generated.map((checkpoint, index) => {
+        const expectedMinutes = Math.max(
+          1,
+          Math.round((new Date(checkpoint.expected_time).getTime() - Date.now()) / 60000)
+        )
+
+        return {
+          id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+          name: checkpoint.name,
+          expectedTime: expectedMinutes,
+          location: {
+            lat: checkpoint.lat,
+            lng: checkpoint.lng,
+          },
+          status: 'pending',
+        }
+      })
+
+      setCheckpoints(generatedCheckpoints)
+    } catch (error) {
+      setRouteError(error instanceof Error ? error.message : 'Failed to generate checkpoints.')
+    } finally {
+      setIsGeneratingCheckpoints(false)
+    }
   }
 
   const handleDeleteCheckpoint = (id: string) => {
@@ -137,7 +188,50 @@ export default function SessionNewPage() {
         {step === 2 && (
           <div className="space-y-6">
             <div>
-              <label className="block text-sm font-medium text-foreground mb-4">Add checkpoints</label>
+              <label className="block text-sm font-medium text-foreground mb-4">Generate or add checkpoints</label>
+              <div className="space-y-4 mb-6 p-4 bg-card rounded-lg border border-border">
+                <div>
+                  <p className="text-sm font-medium text-foreground mb-2">Generate from place names</p>
+                  <p className="text-xs text-muted-foreground mb-4">
+                    Enter simple place names or addresses. The app will look up the coordinates for you.
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-muted-foreground mb-1">Start place</label>
+                    <input
+                      type="text"
+                      value={routeStartPlace}
+                      onChange={(e) => setRouteStartPlace(e.target.value)}
+                      placeholder="Home, office, or an address"
+                      className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-beacon-amber text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-muted-foreground mb-1">End place</label>
+                    <input
+                      type="text"
+                      value={routeEndPlace}
+                      onChange={(e) => setRouteEndPlace(e.target.value)}
+                      placeholder="Park, market, or destination"
+                      className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-beacon-amber text-sm"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={handleGenerateCheckpoints}
+                    disabled={isGeneratingCheckpoints}
+                    className="px-4 py-2 bg-beacon-amber text-ink-indigo rounded-lg font-medium hover:bg-amber-500 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isGeneratingCheckpoints ? 'Generating...' : 'Generate checkpoints'}
+                  </button>
+                  <span className="text-xs text-muted-foreground">This replaces the current checkpoint list.</span>
+                </div>
+                {routeError && <p className="text-sm text-alert-coral">{routeError}</p>}
+              </div>
+
+              <label className="block text-sm font-medium text-foreground mb-4">Add checkpoints manually</label>
               <div className="space-y-3 mb-4">
                 <div>
                   <input
