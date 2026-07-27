@@ -1,91 +1,100 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
+import { AlertCircle, CheckCircle2, Clock, ExternalLink, Home, MapPin, Zap } from 'lucide-react'
+import { BeaconDot } from '@/components/beacon-dot'
 import { Header } from '@/components/header'
 import { SOSButton } from '@/components/sos-button'
 import { StatusBadge } from '@/components/status-badge'
-import { BeaconDot } from '@/components/beacon-dot'
-import { useSessions, useCheckpoints, useContacts } from '@/lib/hooks'
-import { CheckCircle2, AlertCircle, Clock, MapPin, Zap, Home } from 'lucide-react'
+import { apiFetch } from '@/lib/api'
+import { useAuth } from '@/lib/auth-context'
+import { useContacts } from '@/lib/hooks'
+import { useLiveLocation } from '@/lib/hooks/useLiveLocation'
+import { useSessionData } from '@/lib/hooks/useSessionData'
 
 export default function SessionActivePage() {
   const params = useParams()
   const router = useRouter()
   const sessionId = params.id as string
+  const { token } = useAuth()
 
-  const { sessions, updateSession } = useSessions()
+  const { session, loading } = useSessionData(sessionId)
   const { contacts } = useContacts()
-  const session = sessions.find((s) => s.id === sessionId)
-  const { checkpoints, updateCheckpoint, markCheckpointReached } = useCheckpoints(sessionId)
+  const isActive = session?.status === 'active'
+  const { status: locationStatus, lastSent } = useLiveLocation(sessionId, isActive)
 
-  const [currentCheckpointIndex, setCurrentCheckpointIndex] = useState(0)
-  const [showCountdownModal, setShowCountdownModal] = useState(false)
-  const [timeRemaining, setTimeRemaining] = useState(0)
-  const [showEscalationModal, setShowEscalationModal] = useState(false)
   const [elapsedTime, setElapsedTime] = useState(0)
+  const [showCountdownModal, setShowCountdownModal] = useState(false)
+  const [showEscalationModal, setShowEscalationModal] = useState(false)
+
+  const checkpoints = session?.checkpoints ?? []
+  const currentCheckpointIndex = useMemo(
+    () => checkpoints.findIndex((checkpoint) => checkpoint.status !== 'reached'),
+    [checkpoints]
+  )
+  const liveMapUrl = useMemo(() => {
+    if (!lastSent) return null
+
+    const offset = 0.008
+    const bbox = [
+      lastSent.lng - offset,
+      lastSent.lat - offset,
+      lastSent.lng + offset,
+      lastSent.lat + offset,
+    ].join(',')
+    return `https://www.openstreetmap.org/export/embed.html?bbox=${encodeURIComponent(bbox)}&layer=mapnik&marker=${encodeURIComponent(`${lastSent.lat},${lastSent.lng}`)}`
+  }, [lastSent])
 
   useEffect(() => {
     if (!session) return
 
-    const interval = setInterval(() => {
-      const elapsed = Math.floor((Date.now() - session.startTime) / 1000)
-      setElapsedTime(elapsed)
-    }, 1000)
+    const start = new Date(session.started_at).getTime()
+    const updateElapsedTime = () => {
+      setElapsedTime(Math.max(0, Math.floor((Date.now() - start) / 1000)))
+    }
 
+    updateElapsedTime()
+    const interval = setInterval(updateElapsedTime, 1000)
     return () => clearInterval(interval)
   }, [session])
 
   useEffect(() => {
-    if (!showCountdownModal) return
+    setShowCountdownModal(checkpoints.some((checkpoint) => checkpoint.status === 'pinged'))
+    setShowEscalationModal(
+      checkpoints.some((checkpoint) => checkpoint.status === 'contacts_alerted')
+    )
+  }, [checkpoints])
 
-    const remaining = 30 // 30 seconds countdown
-    let count = remaining
-
-    const interval = setInterval(() => {
-      setTimeRemaining(count)
-      count--
-
-      if (count < 0) {
-        clearInterval(interval)
-        setShowCountdownModal(false)
-        setShowEscalationModal(true)
-      }
-    }, 1000)
-
-    setTimeRemaining(count)
-    return () => clearInterval(interval)
-  }, [showCountdownModal])
-
-  const handleCompleteSession = () => {
-    if (!session) return
-    updateSession(sessionId, {
-      status: 'completed',
-      endTime: Date.now(),
-    })
+  const handleCompleteSession = async () => {
+    await apiFetch(
+      `/sessions/${encodeURIComponent(sessionId)}/complete`,
+      { method: 'POST' },
+      token
+    )
     router.push('/history')
   }
 
-  const handleSOS = () => {
-    console.log('[v0] SOS triggered')
-    setShowEscalationModal(true)
+  const handleSOS = async () => {
+    await apiFetch(
+      `/sessions/${encodeURIComponent(sessionId)}/sos`,
+      { method: 'POST' },
+      token
+    )
   }
 
-  const handleMarkCheckpointReached = () => {
-    const currentCheckpoint = checkpoints[currentCheckpointIndex]
-    if (currentCheckpoint) {
-      markCheckpointReached(currentCheckpoint.id)
-      if (currentCheckpointIndex < checkpoints.length - 1) {
-        setCurrentCheckpointIndex(currentCheckpointIndex + 1)
-      }
-    }
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
   }
 
-  const handleTriggerOverdue = () => {
-    if (checkpoints[currentCheckpointIndex]) {
-      updateCheckpoint(checkpoints[currentCheckpointIndex].id, { status: 'overdue' })
-      setShowCountdownModal(true)
-    }
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <p className="text-muted-foreground">Loading session...</p>
+      </div>
+    )
   }
 
   if (!session) {
@@ -105,57 +114,87 @@ export default function SessionActivePage() {
     )
   }
 
-  const currentCheckpoint = checkpoints[currentCheckpointIndex]
-  const sessionContacts = contacts.filter((c) => session.contacts.includes(c.id))
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
-  }
-
   return (
     <div className="min-h-screen bg-background">
       <Header />
 
-      {/* Session Header */}
       <div className="border-b border-border bg-card sticky top-16 z-40">
         <div className="max-w-4xl mx-auto px-4 py-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold text-foreground">{session.name}</h1>
-              <p className="text-sm text-muted-foreground">{session.route}</p>
+              {session.route && <p className="text-sm text-muted-foreground">{session.route}</p>}
+              {locationStatus === 'denied' && (
+                <p className="text-xs text-alert-coral mt-1">
+                  Location access denied - live tracking is off
+                </p>
+              )}
             </div>
             <div className="text-right">
-              <div className="text-3xl font-mono font-bold text-beacon-amber">{formatTime(elapsedTime)}</div>
+              <div className="text-3xl font-mono font-bold text-beacon-amber">
+                {formatTime(elapsedTime)}
+              </div>
               <p className="text-xs text-muted-foreground">Elapsed</p>
             </div>
           </div>
           <div className="flex items-center gap-4 mt-4">
             <StatusBadge status={session.status} />
-            {process.env.NODE_ENV === 'development' && (
-              <button
-                onClick={handleTriggerOverdue}
-                className="text-xs px-2 py-1 bg-alert-coral/10 text-alert-coral rounded hover:bg-alert-coral/20 transition-colors"
-              >
-                [DEV] Trigger overdue
-              </button>
-            )}
           </div>
         </div>
       </div>
 
       <div className="max-w-4xl mx-auto px-4 py-12 sm:px-6 lg:px-8">
-        {/* Mock Map */}
-        <div className="mb-8 aspect-video bg-gradient-to-br from-dawn-mist to-card rounded-lg border-2 border-border flex items-center justify-center relative overflow-hidden">
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="text-center">
-              <BeaconDot size="lg" variant="pulse" />
-              <p className="text-sm text-muted-foreground mt-4">Live position on route</p>
+        <div className="mb-8 aspect-video bg-muted rounded-lg border-2 border-border relative overflow-hidden">
+          {liveMapUrl && lastSent ? (
+            <>
+              <iframe
+                key={liveMapUrl}
+                src={liveMapUrl}
+                title="Current live location"
+                className="absolute inset-0 h-full w-full border-0"
+              />
+              <div className="absolute left-3 top-3 flex items-center gap-2 rounded-md bg-background/95 px-3 py-2 text-xs font-medium text-foreground shadow-sm">
+                <BeaconDot size="sm" variant="pulse" />
+                Live
+              </div>
+              <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between gap-3 rounded-md bg-background/95 px-3 py-2 shadow-sm">
+                <span className="truncate font-mono text-xs text-foreground">
+                  {lastSent.lat.toFixed(6)}, {lastSent.lng.toFixed(6)}
+                </span>
+                <a
+                  href={`https://www.openstreetmap.org/?mlat=${lastSent.lat}&mlon=${lastSent.lng}#map=17/${lastSent.lat}/${lastSent.lng}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="shrink-0 p-1 text-beacon-amber hover:text-amber-600"
+                  aria-label="Open location in OpenStreetMap"
+                  title="Open in OpenStreetMap"
+                >
+                  <ExternalLink size={18} />
+                </a>
+              </div>
+            </>
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center px-6">
+              <div className="text-center">
+                {locationStatus === 'denied' || locationStatus === 'error' ? (
+                  <AlertCircle className="mx-auto text-alert-coral" size={36} />
+                ) : (
+                  <BeaconDot size="lg" variant="pulse" />
+                )}
+                <p className="mt-4 text-sm font-medium text-foreground">
+                  {locationStatus === 'denied'
+                    ? 'Location permission is blocked'
+                    : locationStatus === 'error'
+                      ? 'Unable to update your location'
+                      : isActive
+                        ? 'Waiting for your location...'
+                        : 'Location tracking has stopped'}
+                </p>
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
-        {/* Checkpoint Progress */}
         <div className="mb-12">
           <h2 className="text-lg font-bold text-foreground mb-6">Checkpoints</h2>
           <div className="space-y-3">
@@ -167,7 +206,7 @@ export default function SessionActivePage() {
                     ? 'border-beacon-amber bg-beacon-amber/5'
                     : checkpoint.status === 'reached'
                       ? 'border-safe-teal bg-safe-teal/5'
-                      : checkpoint.status === 'overdue'
+                      : checkpoint.status === 'overdue' || checkpoint.status === 'pinged'
                         ? 'border-alert-coral bg-alert-coral/5'
                         : 'border-border'
                 }`}
@@ -176,7 +215,7 @@ export default function SessionActivePage() {
                   <div className="flex-shrink-0 mt-1">
                     {checkpoint.status === 'reached' ? (
                       <CheckCircle2 className="text-safe-teal" size={24} />
-                    ) : checkpoint.status === 'overdue' ? (
+                    ) : checkpoint.status === 'overdue' || checkpoint.status === 'pinged' ? (
                       <AlertCircle className="text-alert-coral animate-pulse" size={24} />
                     ) : idx === currentCheckpointIndex ? (
                       <BeaconDot size="md" variant="pulse" />
@@ -186,34 +225,25 @@ export default function SessionActivePage() {
                   </div>
                   <div className="flex-1">
                     <h3 className="font-semibold text-foreground">{checkpoint.name}</h3>
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
-                      <Clock size={16} />
-                      <span>{checkpoint.expectedTime} minutes</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <MapPin size={16} />
-                      <span className="font-mono">{checkpoint.location.lat}, {checkpoint.location.lng}</span>
-                    </div>
+                    {checkpoint.lat !== null && checkpoint.lng !== null && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <MapPin size={16} />
+                        <span className="font-mono">
+                          {checkpoint.lat.toFixed(4)}, {checkpoint.lng.toFixed(4)}
+                        </span>
+                      </div>
+                    )}
                   </div>
                   <div className="flex-shrink-0">
                     <StatusBadge status={checkpoint.status} />
                   </div>
                 </div>
-                {idx === currentCheckpointIndex && checkpoint.status === 'pending' && (
-                  <button
-                    onClick={handleMarkCheckpointReached}
-                    className="mt-4 w-full px-4 py-2 bg-safe-teal text-ink-indigo font-semibold rounded-lg hover:bg-teal-400 transition-colors"
-                  >
-                    Mark as reached
-                  </button>
-                )}
               </div>
             ))}
           </div>
         </div>
 
-        {/* Session Complete Button */}
-        {checkpoints.every((c) => c.status === 'reached') && (
+        {checkpoints.length > 0 && checkpoints.every((checkpoint) => checkpoint.status === 'reached') && (
           <div className="mb-8 p-6 bg-card rounded-lg border-2 border-safe-teal">
             <h3 className="font-semibold text-foreground mb-2">All checkpoints reached!</h3>
             <p className="text-sm text-muted-foreground mb-4">
@@ -229,11 +259,10 @@ export default function SessionActivePage() {
           </div>
         )}
 
-        {/* Contacts Notified */}
         <div>
-          <h3 className="text-lg font-bold text-foreground mb-4">Contacts notified</h3>
+          <h3 className="text-lg font-bold text-foreground mb-4">Your trusted contacts</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {sessionContacts.map((contact) => (
+            {contacts.map((contact) => (
               <div key={contact.id} className="p-4 bg-card rounded-lg border border-border">
                 <p className="font-semibold text-foreground">{contact.name}</p>
                 <p className="text-sm text-muted-foreground">{contact.relationship}</p>
@@ -244,88 +273,42 @@ export default function SessionActivePage() {
         </div>
       </div>
 
-      {/* Countdown Modal (Are you OK?) */}
       {showCountdownModal && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center">
           <div className="w-full max-w-md bg-background rounded-lg p-8 text-center border border-border">
-            <div className="mb-8 flex justify-center">
-              <div className="relative w-32 h-32">
-                <svg className="w-full h-full" viewBox="0 0 120 120">
-                  <circle cx="60" cy="60" r="56" fill="none" stroke="#E5E8F0" strokeWidth="2" />
-                  <circle
-                    cx="60"
-                    cy="60"
-                    r="56"
-                    fill="none"
-                    stroke="#FF4B5C"
-                    strokeWidth="2"
-                    strokeDasharray={`${(timeRemaining / 30) * 351.86} 351.86`}
-                    style={{ transform: 'rotate(-90deg)', transformOrigin: '60px 60px' }}
-                  />
-                </svg>
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-center">
-                    <div className="text-4xl font-bold text-alert-coral">{timeRemaining}</div>
-                    <p className="text-xs text-muted-foreground">seconds</p>
-                  </div>
-                </div>
-              </div>
+            <div className="mb-6">
+              <AlertCircle className="mx-auto text-alert-coral" size={48} />
             </div>
-
             <h2 className="text-2xl font-bold text-foreground mb-2">Are you OK?</h2>
             <p className="text-muted-foreground mb-8">
-              You missed a checkpoint. If everything&apos;s fine, confirm below. Otherwise, we&apos;ll alert your contacts.
+              You missed a checkpoint. Walk or update your location to confirm you&apos;re fine -
+              otherwise we&apos;ll alert your contacts shortly.
             </p>
-
-            <div className="flex flex-col gap-3">
-              <button
-                onClick={() => {
-                  setShowCountdownModal(false)
-                  handleMarkCheckpointReached()
-                }}
-                className="w-full px-4 py-3 bg-safe-teal text-ink-indigo font-semibold rounded-lg hover:bg-teal-400 transition-colors"
-              >
-                I&apos;m OK
-              </button>
-              <button
-                onClick={handleSOS}
-                className="w-full px-4 py-3 bg-alert-coral text-white font-semibold rounded-lg hover:bg-red-600 transition-colors flex items-center justify-center gap-2"
-              >
-                <Zap size={20} />
-                Send help
-              </button>
-            </div>
+            <button
+              onClick={handleSOS}
+              className="w-full px-4 py-3 bg-alert-coral text-white font-semibold rounded-lg hover:bg-red-600 transition-colors flex items-center justify-center gap-2"
+            >
+              <Zap size={20} />
+              Send help now
+            </button>
           </div>
         </div>
       )}
 
-      {/* Escalation Modal */}
       {showEscalationModal && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center">
           <div className="w-full max-w-md bg-background rounded-lg p-8 text-center border-2 border-alert-coral">
             <div className="mb-6 flex justify-center">
               <AlertCircle className="text-alert-coral animate-pulse" size={48} />
             </div>
-
-            <h2 className="text-2xl font-bold text-alert-coral mb-2">Alerting your contacts</h2>
+            <h2 className="text-2xl font-bold text-alert-coral mb-2">
+              Your contacts have been alerted
+            </h2>
             <p className="text-muted-foreground mb-6">
-              We&apos;re sending notifications to:
+              We emailed your trusted contacts with your last known location.
             </p>
-
-            <div className="space-y-2 mb-8 text-left">
-              {sessionContacts.map((contact) => (
-                <div key={contact.id} className="p-3 bg-alert-coral/10 rounded-lg">
-                  <p className="font-semibold text-foreground">{contact.name}</p>
-                  <p className="text-xs text-muted-foreground">{contact.phone}</p>
-                </div>
-              ))}
-            </div>
-
             <button
-              onClick={() => {
-                updateSession(sessionId, { status: 'escalated', endTime: Date.now() })
-                setTimeout(() => router.push('/history'), 1500)
-              }}
+              onClick={() => router.push('/history')}
               className="w-full px-4 py-3 bg-beacon-amber text-ink-indigo font-semibold rounded-lg hover:bg-amber-500 transition-colors"
             >
               Done
@@ -334,7 +317,7 @@ export default function SessionActivePage() {
         </div>
       )}
 
-      <SOSButton onTrigger={handleSOS} disabled={session.status !== 'active'} />
+      <SOSButton onTrigger={handleSOS} />
     </div>
   )
 }

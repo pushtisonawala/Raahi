@@ -11,14 +11,14 @@ import { useContacts, useSessions } from '@/lib/hooks'
 
 export function Dashboard() {
   const { contacts, loading: contactsLoading, error: contactsError, refresh } = useContacts()
-  const { sessions } = useSessions()
+  const { sessions, loading: sessionsLoading, error: sessionsError } = useSessions()
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
     setMounted(true)
   }, [])
 
-  const recentSessions = sessions.slice(-3).reverse()
+  const recentSessions = sessions.slice(0, 3)
   const displayContacts = contacts.slice(0, 3)
 
   if (!mounted) {
@@ -114,7 +114,16 @@ export function Dashboard() {
         {/* Recent Sessions */}
         <section>
           <h2 className="text-2xl font-bold text-foreground mb-6">Recent sessions</h2>
-          {recentSessions.length > 0 ? (
+          {sessionsLoading ? (
+            <div className="flex min-h-32 items-center justify-center" role="status">
+              <LoaderCircle className="animate-spin text-beacon-amber" size={24} />
+              <span className="sr-only">Loading sessions</span>
+            </div>
+          ) : sessionsError ? (
+            <div className="rounded-lg border border-alert-coral/30 bg-alert-coral/10 p-4 text-sm text-foreground">
+              {sessionsError}
+            </div>
+          ) : recentSessions.length > 0 ? (
             <div className="space-y-4">
               {recentSessions.map((session) => (
                 <Link
@@ -129,7 +138,7 @@ export function Dashboard() {
                       <div className="flex items-center gap-2">
                         <StatusBadge status={session.status} />
                         <span className="text-xs text-muted-foreground">
-                          {new Date(session.createdAt).toLocaleDateString()}
+                          {new Date(session.started_at).toLocaleDateString()}
                         </span>
                       </div>
                     </div>

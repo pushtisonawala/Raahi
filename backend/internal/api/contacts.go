@@ -51,7 +51,8 @@ func CreateContactHandler(w http.ResponseWriter, r *http.Request) {
 func ListContactHandler(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 	rows, err := db.Pool.Query(r.Context(),
-		`SELECT id, user_id, name, phone, email, relationship, created_at FROM contacts WHERE user_id = $1 ORDER BY created_at DESC`,
+		`SELECT id, user_id, name, phone, COALESCE(email, ''), COALESCE(relationship, ''), created_at
+		 FROM contacts WHERE user_id = $1 ORDER BY created_at DESC`,
 		userID,
 	)
 	if err != nil {

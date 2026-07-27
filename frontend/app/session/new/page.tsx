@@ -3,14 +3,16 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Header } from '@/components/header'
-import { useSessions, useContacts } from '@/lib/hooks'
+import { apiFetch } from '@/lib/api'
+import { useAuth } from '@/lib/auth-context'
+import { useContacts } from '@/lib/hooks'
 import { ArrowRight, ArrowLeft, Plus, X, GripVertical } from 'lucide-react'
-import type { Checkpoint, Session } from '@/lib/types'
+import type { Checkpoint } from '@/lib/types'
 import { geocodePlace, getRouteCheckpoints } from '@/lib/route'
 
 export default function SessionNewPage() {
   const router = useRouter()
-  const { createSession } = useSessions()
+  const { token } = useAuth()
   const { contacts } = useContacts()
 
   const [step, setStep] = useState(1)
@@ -25,6 +27,8 @@ export default function SessionNewPage() {
   const [isGeneratingCheckpoints, setIsGeneratingCheckpoints] = useState(false)
   const [routeError, setRouteError] = useState<string | null>(null)
   const [draggedId, setDraggedId] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
 
   const handleAddCheckpoint = () => {
     if (!newCheckpoint.name) return
@@ -117,24 +121,43 @@ export default function SessionNewPage() {
     )
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!sessionName || !route || checkpoints.length === 0 || selectedContacts.length === 0) {
       alert('Please complete all steps')
       return
     }
 
-    const session: Omit<Session, 'id' | 'createdAt'> = {
-      name: sessionName,
-      route,
-      checkpoints,
-      contacts: selectedContacts,
-      status: 'active',
-      gracePeriod,
-      startTime: Date.now(),
+    setIsSubmitting(true)
+    setSubmitError(null)
+    try {
+      const response = await apiFetch(
+        '/sessions',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            name: sessionName,
+            route,
+            grace_period: gracePeriod,
+            checkpoints: checkpoints.map((checkpoint) => ({
+              name: checkpoint.name,
+              expected_time: new Date(
+                Date.now() + checkpoint.expectedTime * 60_000
+              ).toISOString(),
+              lat: checkpoint.location.lat,
+              lng: checkpoint.location.lng,
+              radius_meters: 75,
+            })),
+          }),
+        },
+        token
+      )
+      const created = (await response.json()) as { id: string }
+      router.push(`/session/active/${created.id}`)
+    } catch (cause) {
+      setSubmitError(cause instanceof Error ? cause.message : 'Unable to start the session.')
+    } finally {
+      setIsSubmitting(false)
     }
-
-    const created = createSession(session)
-    router.push(`/session/active/${created.id}`)
   }
 
   return (
@@ -421,13 +444,17 @@ export default function SessionNewPage() {
               <ArrowRight size={20} />
             </button>
           ) : (
-            <button
-              onClick={handleSubmit}
-              className="flex items-center gap-2 px-6 py-2 bg-safe-teal text-ink-indigo rounded-lg font-semibold hover:bg-teal-400 transition-colors"
-            >
-              Start session
-              <ArrowRight size={20} />
-            </button>
+            <div className="flex flex-col items-end gap-2">
+              {submitError && <p className="text-sm text-alert-coral">{submitError}</p>}
+              <button
+                onClick={() => void handleSubmit()}
+                disabled={isSubmitting}
+                className="flex items-center gap-2 px-6 py-2 bg-safe-teal text-ink-indigo rounded-lg font-semibold hover:bg-teal-400 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isSubmitting ? 'Starting...' : 'Start session'}
+                <ArrowRight size={20} />
+              </button>
+            </div>
           )}
         </div>
       </div>

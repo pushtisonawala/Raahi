@@ -1,9 +1,8 @@
 import { useState, useCallback, useEffect } from 'react'
-import type { Contact, Session, Checkpoint } from './types'
+import type { Contact } from './types'
+import type { SessionData } from './hooks/useSessionData'
 import { ApiError, apiFetch } from './api'
 import { useAuth } from './auth-context'
-
-const STORAGE_KEY = 'raahi_app_state'
 
 export function useContacts() {
   const { token, loading: authLoading, logout } = useAuth()
@@ -129,104 +128,47 @@ export function useContacts() {
   }
 }
 
-/* Session persistence remains local until the backend exposes session endpoints. */
 export function useSessions() {
-  const [sessions, setSessions] = useState<Session[]>([])
-  const [mounted, setMounted] = useState(false)
+  const { token, loading: authLoading, logout } = useAuth()
+  const [sessions, setSessions] = useState<SessionData[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadSessions = useCallback(
+    async (signal?: AbortSignal) => {
+      if (!token) {
+        setSessions([])
+        setLoading(false)
+        return
+      }
+
+      setLoading(true)
+      setError(null)
+      try {
+        const response = await apiFetch('/sessions', { signal }, token)
+        setSessions((await response.json()) as SessionData[])
+      } catch (cause) {
+        if (cause instanceof DOMException && cause.name === 'AbortError') return
+        if (cause instanceof ApiError && cause.status === 401) logout()
+        setError(cause instanceof Error ? cause.message : 'Unable to load sessions.')
+      } finally {
+        if (!signal?.aborted) setLoading(false)
+      }
+    },
+    [logout, token]
+  )
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored) {
-      const state = JSON.parse(stored)
-      setSessions(state.sessions || [])
-    }
-    setMounted(true)
-  }, [])
-
-  const updateSessions = useCallback((newSessions: Session[]) => {
-    setSessions(newSessions)
-    const stored = localStorage.getItem(STORAGE_KEY)
-    const state = stored ? JSON.parse(stored) : {}
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, sessions: newSessions }))
-  }, [])
-
-  const createSession = useCallback(
-    (session: Omit<Session, 'id' | 'createdAt'>) => {
-      const newSession: Session = {
-        ...session,
-        id: Date.now().toString(),
-        createdAt: Date.now(),
-      }
-      updateSessions([...sessions, newSession])
-      return newSession
-    },
-    [sessions, updateSessions]
-  )
-
-  const updateSession = useCallback(
-    (id: string, updates: Partial<Session>) => {
-      const updated = sessions.map((s) => (s.id === id ? { ...s, ...updates } : s))
-      updateSessions(updated)
-    },
-    [sessions, updateSessions]
-  )
-
-  const getSession = useCallback(
-    (id: string) => {
-      return sessions.find((s) => s.id === id)
-    },
-    [sessions]
-  )
+    if (authLoading) return
+    const controller = new AbortController()
+    void loadSessions(controller.signal)
+    return () => controller.abort()
+  }, [authLoading, loadSessions])
 
   return {
     sessions,
-    createSession,
-    updateSession,
-    getSession,
-    mounted,
-  }
-}
-
-export function useCheckpoints(sessionId: string | undefined) {
-  const { sessions, updateSession } = useSessions()
-
-  const session = sessionId ? sessions.find((s) => s.id === sessionId) : undefined
-
-  const updateCheckpoint = useCallback(
-    (checkpointId: string, updates: Partial<Checkpoint>) => {
-      if (!session) return
-
-      const updated = session.checkpoints.map((c) =>
-        c.id === checkpointId ? { ...c, ...updates } : c
-      )
-      updateSession(session.id, { checkpoints: updated })
-    },
-    [session, updateSession]
-  )
-
-  const markCheckpointReached = useCallback(
-    (checkpointId: string) => {
-      updateCheckpoint(checkpointId, { status: 'reached' })
-    },
-    [updateCheckpoint]
-  )
-
-  return {
-    checkpoints: session?.checkpoints || [],
-    updateCheckpoint,
-    markCheckpointReached,
-  }
-}
-
-export function useActiveSession() {
-  const [activeSessionId, setActiveSessionId] = useState<string | undefined>(undefined)
-  const { sessions } = useSessions()
-
-  const activeSession = activeSessionId ? sessions.find((s) => s.id === activeSessionId) : undefined
-
-  return {
-    activeSessionId,
-    setActiveSessionId,
-    activeSession,
+    loading: authLoading || loading,
+    error,
+    refresh: loadSessions,
   }
 }

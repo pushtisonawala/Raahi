@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -18,7 +19,33 @@ type checkpointInput struct {
 }
 
 type createSessionInput struct {
+	Name        string            `json:"name"`
+	Route       string            `json:"route"`
+	GracePeriod int               `json:"grace_period"`
 	Checkpoints []checkpointInput `json:"checkpoints"`
+}
+
+type checkpointResponse struct {
+	ID           string     `json:"id"`
+	Name         string     `json:"name"`
+	Status       string     `json:"status"`
+	ExpectedTime *time.Time `json:"expected_time"`
+	Lat          *float64   `json:"lat"`
+	Lng          *float64   `json:"lng"`
+	RadiusMeters int        `json:"radius_meters"`
+	OrderIndex   int        `json:"order_index"`
+}
+
+type sessionResponse struct {
+	ID          string               `json:"id"`
+	UserID      string               `json:"user_id"`
+	Name        string               `json:"name"`
+	Route       string               `json:"route"`
+	Status      string               `json:"status"`
+	GracePeriod int                  `json:"grace_period"`
+	StartedAt   time.Time            `json:"started_at"`
+	CompletedAt *time.Time           `json:"completed_at"`
+	Checkpoints []checkpointResponse `json:"checkpoints"`
 }
 
 func CreateSessionHandler(w http.ResponseWriter, r *http.Request) {
@@ -33,6 +60,12 @@ func CreateSessionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "at least one checkpoint is required", http.StatusBadRequest)
 		return
 	}
+	if req.Name == "" {
+		req.Name = "Safety session"
+	}
+	if req.GracePeriod <= 0 {
+		req.GracePeriod = 5
+	}
 
 	tx, err := db.Pool.Begin(r.Context())
 	if err != nil {
@@ -43,8 +76,9 @@ func CreateSessionHandler(w http.ResponseWriter, r *http.Request) {
 
 	var sessionID string
 	err = tx.QueryRow(r.Context(),
-		`INSERT INTO sessions (user_id, status) VALUES ($1, 'active') RETURNING id`,
-		userID,
+		`INSERT INTO sessions (user_id, name, route, status, grace_period)
+		 VALUES ($1, $2, $3, 'active', $4) RETURNING id`,
+		userID, req.Name, req.Route, req.GracePeriod,
 	).Scan(&sessionID)
 	if err != nil {
 		http.Error(w, "failed to create session", http.StatusInternalServerError)
@@ -81,60 +115,57 @@ func GetSessionHandler(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 	sessionID := chi.URLParam(r, "id")
 
-	var session struct {
-		ID        string    `json:"id"`
-		UserID    string    `json:"user_id"`
-		Status    string    `json:"status"`
-		StartedAt time.Time `json:"started_at"`
-	}
+	var session sessionResponse
 	err := db.Pool.QueryRow(r.Context(),
-		`SELECT id, user_id, status, started_at FROM sessions WHERE id = $1 AND user_id = $2`,
+		`SELECT id, user_id, name, route, status, grace_period, started_at, completed_at
+		 FROM sessions WHERE id = $1 AND user_id = $2`,
 		sessionID, userID,
-	).Scan(&session.ID, &session.UserID, &session.Status, &session.StartedAt)
+	).Scan(
+		&session.ID, &session.UserID, &session.Name, &session.Route, &session.Status,
+		&session.GracePeriod, &session.StartedAt, &session.CompletedAt,
+	)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
 
-	rows, err := db.Pool.Query(r.Context(),
-		`SELECT id, name, status, lat, lng, radius_meters, order_index
-		 FROM checkpoints WHERE session_id = $1 ORDER BY order_index ASC`,
-		sessionID,
-	)
+	session.Checkpoints, err = loadCheckpoints(r.Context(), sessionID)
 	if err != nil {
 		http.Error(w, "failed to fetch checkpoints", http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(session)
+}
 
-	checkpoints := []map[string]interface{}{}
-	for rows.Next() {
-		var id, name, status string
-		var lat, lng *float64
-		var radius, orderIndex int
-		if err := rows.Scan(&id, &name, &status, &lat, &lng, &radius, &orderIndex); err != nil {
-			http.Error(w, "failed to read checkpoints", http.StatusInternalServerError)
-			return
-		}
-		checkpoints = append(checkpoints, map[string]interface{}{
-			"id": id, "name": name, "status": status,
-			"lat": lat, "lng": lng,
-			"radius_meters": radius, "order_index": orderIndex,
-		})
+func CompleteSessionHandler(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	sessionID := chi.URLParam(r, "id")
+
+	tag, err := db.Pool.Exec(r.Context(),
+		`UPDATE sessions SET status = 'completed', completed_at = NOW()
+		 WHERE id = $1 AND user_id = $2 AND status = 'active'`,
+		sessionID, userID,
+	)
+	if err != nil {
+		http.Error(w, "failed to complete session", http.StatusInternalServerError)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		http.Error(w, "session not found or not active", http.StatusNotFound)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id": session.ID, "user_id": session.UserID, "status": session.Status,
-		"started_at": session.StartedAt, "checkpoints": checkpoints,
-	})
+	json.NewEncoder(w).Encode(map[string]string{"status": "completed"})
 }
 
 func ListSessionsHandler(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 
 	rows, err := db.Pool.Query(r.Context(),
-		`SELECT id, status, started_at FROM sessions WHERE user_id = $1 ORDER BY started_at DESC`,
+		`SELECT id, user_id, name, route, status, grace_period, started_at, completed_at
+		 FROM sessions WHERE user_id = $1 ORDER BY started_at DESC`,
 		userID,
 	)
 	if err != nil {
@@ -143,19 +174,57 @@ func ListSessionsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	sessions := []map[string]interface{}{}
+	sessions := []sessionResponse{}
 	for rows.Next() {
-		var id, status string
-		var startedAt time.Time
-		if err := rows.Scan(&id, &status, &startedAt); err != nil {
+		var session sessionResponse
+		if err := rows.Scan(
+			&session.ID, &session.UserID, &session.Name, &session.Route, &session.Status,
+			&session.GracePeriod, &session.StartedAt, &session.CompletedAt,
+		); err != nil {
 			http.Error(w, "failed to read sessions", http.StatusInternalServerError)
 			return
 		}
-		sessions = append(sessions, map[string]interface{}{
-			"id": id, "status": status, "started_at": startedAt,
-		})
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, "failed to read sessions", http.StatusInternalServerError)
+		return
+	}
+	rows.Close()
+
+	for i := range sessions {
+		sessions[i].Checkpoints, err = loadCheckpoints(r.Context(), sessions[i].ID)
+		if err != nil {
+			http.Error(w, "failed to fetch checkpoints", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(sessions)
+}
+
+func loadCheckpoints(ctx context.Context, sessionID string) ([]checkpointResponse, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT id, name, status, expected_time, lat, lng, radius_meters, order_index
+		 FROM checkpoints WHERE session_id = $1 ORDER BY order_index ASC`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	checkpoints := []checkpointResponse{}
+	for rows.Next() {
+		var checkpoint checkpointResponse
+		if err := rows.Scan(
+			&checkpoint.ID, &checkpoint.Name, &checkpoint.Status, &checkpoint.ExpectedTime,
+			&checkpoint.Lat, &checkpoint.Lng, &checkpoint.RadiusMeters, &checkpoint.OrderIndex,
+		); err != nil {
+			return nil, err
+		}
+		checkpoints = append(checkpoints, checkpoint)
+	}
+	return checkpoints, rows.Err()
 }

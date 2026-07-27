@@ -5,18 +5,18 @@ import Link from 'next/link'
 import { Header } from '@/components/header'
 import { StatusBadge } from '@/components/status-badge'
 import { useSessions } from '@/lib/hooks'
-import { MapPin, Clock, AlertCircle } from 'lucide-react'
+import { AlertCircle, Clock, LoaderCircle } from 'lucide-react'
 
 export default function HistoryPage() {
-  const { sessions } = useSessions()
-  const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'escalated'>('all')
+  const { sessions, loading, error } = useSessions()
+  const [filterStatus, setFilterStatus] = useState<
+    'all' | 'completed' | 'escalated' | 'sos_triggered'
+  >('all')
 
   const filteredSessions =
     filterStatus === 'all' ? sessions : sessions.filter((s) => s.status === filterStatus)
 
-  const sortedSessions = [...filteredSessions].reverse()
-
-  const formatDate = (timestamp: number) => {
+  const formatDate = (timestamp: string) => {
     return new Date(timestamp).toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',
@@ -47,7 +47,7 @@ export default function HistoryPage() {
 
         {/* Filters */}
         <div className="flex gap-2 mb-8">
-          {(['all', 'completed', 'escalated'] as const).map((status) => (
+          {(['all', 'completed', 'escalated', 'sos_triggered'] as const).map((status) => (
             <button
               key={status}
               onClick={() => setFilterStatus(status)}
@@ -57,23 +57,41 @@ export default function HistoryPage() {
                   : 'bg-muted text-foreground hover:bg-muted/80'
               }`}
             >
-              {status}
+              {status === 'sos_triggered' ? 'SOS' : status}
             </button>
           ))}
         </div>
 
         {/* Sessions List */}
-        {sortedSessions.length > 0 ? (
+        {loading ? (
+          <div className="flex min-h-48 items-center justify-center" role="status">
+            <LoaderCircle className="animate-spin text-beacon-amber" size={28} />
+            <span className="sr-only">Loading session history</span>
+          </div>
+        ) : error ? (
+          <div className="rounded-lg border border-alert-coral/30 bg-alert-coral/10 p-4 text-sm text-foreground">
+            {error}
+          </div>
+        ) : filteredSessions.length > 0 ? (
           <div className="space-y-4">
-            {sortedSessions.map((session, idx) => {
-              const duration = session.endTime ? session.endTime - session.startTime : 0
-              const hasEscalation = session.checkpoints.some((c) => c.status === 'overdue')
+            {filteredSessions.map((session, idx) => {
+              const endTime = session.completed_at
+                ? new Date(session.completed_at).getTime()
+                : Date.now()
+              const duration = Math.max(
+                0,
+                Math.floor((endTime - new Date(session.started_at).getTime()) / 1000)
+              )
+              const hasEscalation = session.checkpoints.some((checkpoint) =>
+                ['overdue', 'pinged', 'contacts_alerted'].includes(checkpoint.status)
+              )
+              const isAlert = session.status === 'escalated' || session.status === 'sos_triggered'
 
               return (
                 <div
                   key={session.id}
                   className={`p-6 rounded-lg border transition-all ${
-                    session.status === 'escalated'
+                    isAlert
                       ? 'bg-alert-coral/5 border-alert-coral/50'
                       : 'bg-card border-border hover:border-beacon-amber/50'
                   }`}
@@ -83,15 +101,15 @@ export default function HistoryPage() {
                     <div className="flex flex-col items-center">
                       <div
                         className={`w-4 h-4 rounded-full border-2 ${
-                          session.status === 'escalated'
+                          isAlert
                             ? 'bg-alert-coral border-alert-coral'
                             : 'bg-safe-teal border-safe-teal'
                         }`}
                       />
-                      {idx < sortedSessions.length - 1 && (
+                      {idx < filteredSessions.length - 1 && (
                         <div
                           className={`w-1 h-16 ${
-                            session.status === 'escalated'
+                            isAlert
                               ? 'bg-alert-coral/30'
                               : 'bg-safe-teal/30'
                           }`}
@@ -113,7 +131,7 @@ export default function HistoryPage() {
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm mt-4 p-3 bg-muted/50 rounded-lg">
                         <div>
                           <p className="text-xs text-muted-foreground">Date</p>
-                          <p className="font-medium text-foreground">{formatDate(session.createdAt)}</p>
+                          <p className="font-medium text-foreground">{formatDate(session.started_at)}</p>
                         </div>
                         <div>
                           <p className="text-xs text-muted-foreground">Duration</p>
@@ -135,7 +153,9 @@ export default function HistoryPage() {
                                 key={checkpoint.id}
                                 className="flex items-center gap-3 text-sm p-2 bg-muted/30 rounded"
                               >
-                                {checkpoint.status === 'overdue' ? (
+                                {checkpoint.status === 'overdue' ||
+                                checkpoint.status === 'pinged' ||
+                                checkpoint.status === 'contacts_alerted' ? (
                                   <AlertCircle className="text-alert-coral" size={16} />
                                 ) : checkpoint.status === 'reached' ? (
                                   <div className="w-4 h-4 rounded-full bg-safe-teal" />
@@ -143,7 +163,14 @@ export default function HistoryPage() {
                                   <div className="w-4 h-4 rounded-full bg-muted" />
                                 )}
                                 <span className="font-medium text-foreground flex-1">{checkpoint.name}</span>
-                                <span className="text-muted-foreground">{checkpoint.expectedTime}m</span>
+                                {checkpoint.expected_time && (
+                                  <span className="text-muted-foreground">
+                                    {new Date(checkpoint.expected_time).toLocaleTimeString([], {
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })}
+                                  </span>
+                                )}
                               </div>
                             ))}
                           </div>

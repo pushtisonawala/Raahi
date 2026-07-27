@@ -46,7 +46,9 @@ func main() {
 	r.With(api.RequireAuth).Post("/sessions", api.CreateSessionHandler)
 	r.With(api.RequireAuth).Get("/sessions", api.ListSessionsHandler)
 	r.With(api.RequireAuth).Get("/sessions/{id}", api.GetSessionHandler)
+	r.With(api.RequireAuth).Post("/sessions/{id}/complete", api.CompleteSessionHandler)
 	r.With(api.RequireAuth).Post("/sessions/{id}/location", api.UpdateLocationHandler)
+	r.With(api.RequireAuth).Post("/sessions/{id}/sos", api.TriggerSOSHandler)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
