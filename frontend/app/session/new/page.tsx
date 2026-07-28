@@ -3,12 +3,13 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Header } from '@/components/header'
+import { PlaceAutocomplete } from '@/components/place-autocomplete'
 import { apiFetch } from '@/lib/api'
 import { useAuth } from '@/lib/auth-context'
 import { useContacts } from '@/lib/hooks'
 import { ArrowRight, ArrowLeft, Plus, X, GripVertical } from 'lucide-react'
 import type { Checkpoint } from '@/lib/types'
-import { geocodePlace, getRouteCheckpoints } from '@/lib/route'
+import { getRouteCheckpoints, type GeocodedPlace } from '@/lib/route'
 
 export default function SessionNewPage() {
   const router = useRouter()
@@ -24,6 +25,8 @@ export default function SessionNewPage() {
   const [newCheckpoint, setNewCheckpoint] = useState({ name: '', expectedTime: 10, lat: 0, lng: 0 })
   const [routeStartPlace, setRouteStartPlace] = useState('')
   const [routeEndPlace, setRouteEndPlace] = useState('')
+  const [selectedStartPlace, setSelectedStartPlace] = useState<GeocodedPlace | null>(null)
+  const [selectedEndPlace, setSelectedEndPlace] = useState<GeocodedPlace | null>(null)
   const [isGeneratingCheckpoints, setIsGeneratingCheckpoints] = useState(false)
   const [routeError, setRouteError] = useState<string | null>(null)
   const [draggedId, setDraggedId] = useState<string | null>(null)
@@ -44,8 +47,8 @@ export default function SessionNewPage() {
   }
 
   const handleGenerateCheckpoints = async () => {
-    if (!routeStartPlace.trim() || !routeEndPlace.trim()) {
-      setRouteError('Enter a start and end place first.')
+    if (!selectedStartPlace || !selectedEndPlace) {
+      setRouteError('Choose a start and destination from the suggestions.')
       return
     }
 
@@ -53,8 +56,8 @@ export default function SessionNewPage() {
     setRouteError(null)
 
     try {
-      const startPlace = await geocodePlace(routeStartPlace)
-      const endPlace = await geocodePlace(routeEndPlace)
+      const startPlace = selectedStartPlace
+      const endPlace = selectedEndPlace
       setRoute(`${startPlace.name} to ${endPlace.name}`)
 
       const generated = await getRouteCheckpoints(startPlace.lat, startPlace.lng, endPlace.lat, endPlace.lng, new Date())
@@ -220,26 +223,32 @@ export default function SessionNewPage() {
                   </p>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-muted-foreground mb-1">Start place</label>
-                    <input
-                      type="text"
-                      value={routeStartPlace}
-                      onChange={(e) => setRouteStartPlace(e.target.value)}
-                      placeholder="Home, office, or an address"
-                      className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-beacon-amber text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-muted-foreground mb-1">End place</label>
-                    <input
-                      type="text"
-                      value={routeEndPlace}
-                      onChange={(e) => setRouteEndPlace(e.target.value)}
-                      placeholder="Park, market, or destination"
-                      className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-beacon-amber text-sm"
-                    />
-                  </div>
+                  <PlaceAutocomplete
+                    label="Start place"
+                    value={routeStartPlace}
+                    onValueChange={(value) => {
+                      setRouteStartPlace(value)
+                      setSelectedStartPlace(null)
+                    }}
+                    onSelect={(place) => {
+                      setRouteStartPlace(place.name)
+                      setSelectedStartPlace(place)
+                    }}
+                    placeholder="Home, office, or an address"
+                  />
+                  <PlaceAutocomplete
+                    label="Destination"
+                    value={routeEndPlace}
+                    onValueChange={(value) => {
+                      setRouteEndPlace(value)
+                      setSelectedEndPlace(null)
+                    }}
+                    onSelect={(place) => {
+                      setRouteEndPlace(place.name)
+                      setSelectedEndPlace(place)
+                    }}
+                    placeholder="Park, market, or destination"
+                  />
                 </div>
                 <div className="flex items-center gap-3">
                   <button

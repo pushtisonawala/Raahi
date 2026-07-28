@@ -6,6 +6,7 @@ export type GeneratedCheckpoint = {
 }
 
 export type GeocodedPlace = {
+  id: string
   name: string
   lat: number
   lng: number
@@ -19,40 +20,43 @@ type OsrmStep = {
   }
 }
 
-type NominatimResult = {
-  display_name: string
-  lat: string
-  lon: string
+type GeoapifyResult = {
+  place_id: string
+  formatted: string
+  lat: number
+  lon: number
 }
 
-export async function geocodePlace(query: string): Promise<GeocodedPlace> {
+export async function searchPlaces(
+  query: string,
+  signal?: AbortSignal
+): Promise<GeocodedPlace[]> {
   const trimmedQuery = query.trim()
-  if (!trimmedQuery) {
-    throw new Error('Enter a place name first')
-  }
+  if (trimmedQuery.length < 3) return []
 
-  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(trimmedQuery)}`
-  const res = await fetch(url, {
-    headers: {
-      Accept: 'application/json',
-    },
+  const apiKey = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY
+  if (!apiKey) throw new Error('Geoapify API key is not configured')
+
+  const params = new URLSearchParams({
+    text: trimmedQuery,
+    format: 'json',
+    limit: '5',
+    apiKey,
+  })
+  const res = await fetch(`https://api.geoapify.com/v1/geocode/autocomplete?${params}`, {
+    signal,
   })
 
-  if (!res.ok) {
-    throw new Error('Could not look up that place')
-  }
+  if (!res.ok) throw new Error('Could not look up places')
 
-  const results = (await res.json()) as NominatimResult[]
-  const first = results[0]
-  if (!first) {
-    throw new Error(`No results found for "${trimmedQuery}"`)
-  }
+  const data = (await res.json()) as { results?: GeoapifyResult[] }
 
-  return {
-    name: first.display_name,
-    lat: Number(first.lat),
-    lng: Number(first.lon),
-  }
+  return (data.results ?? []).map((place) => ({
+    id: place.place_id,
+    name: place.formatted,
+    lat: place.lat,
+    lng: place.lon,
+  }))
 }
 
 export async function getRouteCheckpoints(
