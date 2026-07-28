@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const defaultAllowedOrigins = "http://localhost:3000,http://127.0.0.1:3000"
+const defaultAllowedOrigins = "http://localhost:3000,http://127.0.0.1:3000,https://raahi-navy.vercel.app"
 
 func CORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -33,9 +33,9 @@ func CORS(next http.Handler) http.Handler {
 }
 
 func isAllowedOrigin(origin string) bool {
-	configured := os.Getenv("CORS_ALLOWED_ORIGINS")
-	if configured == "" {
-		configured = defaultAllowedOrigins
+	configured := defaultAllowedOrigins
+	if additional := os.Getenv("CORS_ALLOWED_ORIGINS"); additional != "" {
+		configured += "," + additional
 	}
 
 	for _, allowed := range strings.Split(configured, ",") {

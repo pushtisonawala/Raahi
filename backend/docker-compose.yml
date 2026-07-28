@@ -24,7 +24,7 @@ services:
       JWT_SECRET: some-long-random-string-change-this-later
       SMTP_EMAIL: ${SMTP_EMAIL}
       SMTP_PASSWORD: ${SMTP_PASSWORD}
-      CORS_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      CORS_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,https://raahi-navy.vercel.app
     depends_on:
       postgres:
         condition: service_healthy

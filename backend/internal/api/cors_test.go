@@ -25,6 +25,25 @@ func TestCORSAllowsConfiguredOrigin(t *testing.T) {
 	}
 }
 
+func TestCORSAllowsProductionOrigin(t *testing.T) {
+	t.Setenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000")
+	handler := CORS(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodOptions, "/signup", nil)
+	req.Header.Set("Origin", "https://raahi-navy.vercel.app")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, req)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("expected %d, got %d", http.StatusNoContent, response.Code)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "https://raahi-navy.vercel.app" {
+		t.Fatalf("expected production origin header, got %q", got)
+	}
+}
+
 func TestCORSRejectsUnknownPreflightOrigin(t *testing.T) {
 	t.Setenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000")
 	handler := CORS(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
