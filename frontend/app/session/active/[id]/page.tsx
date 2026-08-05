@@ -139,7 +139,36 @@ export default function SessionActivePage() {
           </div>
           <div className="flex items-center gap-4 mt-4">
             <StatusBadge status={session.status} />
+            {session.route_deviation && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-alert-coral/10 px-3 py-1 text-xs font-medium text-alert-coral">
+                <AlertCircle size={12} />
+                Off route
+              </span>
+            )}
           </div>
+          {session.route_total_meters ? (
+            <div className="mt-4">
+              <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+                <span>Route progress</span>
+                <span>
+                  {Math.round(
+                    (Math.min(session.progress_meters, session.route_total_meters) /
+                      session.route_total_meters) *
+                      100
+                  )}
+                  %
+                </span>
+              </div>
+              <div className="w-full h-2 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-2 rounded-full bg-safe-teal transition-all duration-500"
+                  style={{
+                    width: `${Math.min(100, (session.progress_meters / session.route_total_meters) * 100)}%`,
+                  }}
+                />
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 

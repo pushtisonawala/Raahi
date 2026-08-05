@@ -39,9 +39,21 @@ func TriggerSOSHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		defer rows.Close()
 
-		locationText := "Location unavailable."
+		// Raw decimal coordinates aren't something most people can act on in
+		// the middle of an emergency - a tappable map link that drops a pin
+		// exactly where the person last was is what actually helps someone
+		// find them. Google Maps' "q=lat,lng" URL scheme opens directly to
+		// that point with no API key required, and works from any email
+		// client on any device.
+		plainLocationText := "Location unavailable."
+		htmlLocationText := "Location unavailable."
 		if lastLat != nil && lastLng != nil {
-			locationText = fmt.Sprintf("Last known location: %f, %f.", *lastLat, *lastLng)
+			mapsURL := fmt.Sprintf("https://www.google.com/maps?q=%f,%f", *lastLat, *lastLng)
+			plainLocationText = fmt.Sprintf("Last known location: %s (%f, %f)", mapsURL, *lastLat, *lastLng)
+			htmlLocationText = fmt.Sprintf(
+				`Last known location: <a href="%s">view on map</a> (%f, %f)`,
+				mapsURL, *lastLat, *lastLng,
+			)
 		}
 
 		for rows.Next() {
@@ -51,8 +63,8 @@ func TriggerSOSHandler(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			plainBody := "This is an emergency alert. Your contact has triggered SOS. " + locationText
-			htmlBody := "<p>This is an emergency alert. Your contact has triggered SOS. " + locationText + "</p>"
+			plainBody := "This is an emergency alert. Your contact has triggered SOS.\n\n" + plainLocationText
+			htmlBody := "<p>This is an emergency alert. Your contact has triggered SOS.</p><p>" + htmlLocationText + "</p>"
 			if err := notify.SendEmail(
 				contactEmail,
 				"SOS: your contact needs help now",

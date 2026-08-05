@@ -1,5 +1,6 @@
-'use client'
-
+// Unchanged logic from the web app's lib/hooks/useSessionData.ts. React
+// Native ships a global WebSocket implementation, so the reconnect/polling
+// logic works exactly as it did in the browser.
 import { useCallback, useEffect, useState } from 'react'
 import { API_URL, apiFetch } from '@/lib/api'
 import { useAuth } from '@/lib/auth-context'

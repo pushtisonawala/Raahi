@@ -86,6 +86,21 @@ func Migrate() {
 			ADD COLUMN IF NOT EXISTS last_lng DOUBLE PRECISION,
 			ADD COLUMN IF NOT EXISTS last_location_at TIMESTAMPTZ;
 
+		-- route_geometry stores the full walking-route polyline (an ordered
+		-- JSON array of {lat,lng} points) returned by the routing engine when
+		-- the session was created. progress_meters/route_total_meters let us
+		-- measure "how far along the intended route" someone is by projecting
+		-- their live location onto this line, instead of requiring them to
+		-- physically enter a small radius around a handful of fixed pins -
+		-- which only ever worked if they walked the one exact path the
+		-- routing engine picked. route_deviation flags when the person's
+		-- current location is meaningfully off that line.
+		ALTER TABLE sessions
+			ADD COLUMN IF NOT EXISTS route_geometry JSONB,
+			ADD COLUMN IF NOT EXISTS route_total_meters DOUBLE PRECISION,
+			ADD COLUMN IF NOT EXISTS progress_meters DOUBLE PRECISION NOT NULL DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS route_deviation BOOLEAN NOT NULL DEFAULT FALSE;
+
 		CREATE INDEX IF NOT EXISTS sessions_user_id_started_at_idx
 			ON sessions (user_id, started_at DESC);
 
@@ -100,6 +115,17 @@ func Migrate() {
 			radius_meters INTEGER NOT NULL DEFAULT 75,
 			order_index INTEGER NOT NULL DEFAULT 0
 		);
+
+		-- distance_meters is this checkpoint's position along the session's
+		-- route_geometry (arc length from the route's start). When a session
+		-- has a route_geometry, checkpoints are marked "reached" once the
+		-- walker's progress_meters passes this value, rather than requiring
+		-- them to physically enter radius_meters of the checkpoint's exact
+		-- lat/lng. NULL for sessions/checkpoints created before this existed,
+		-- or for manually-added checkpoints with no associated route - those
+		-- keep falling back to the original radius check.
+		ALTER TABLE checkpoints
+			ADD COLUMN IF NOT EXISTS distance_meters DOUBLE PRECISION;
 
 		CREATE INDEX IF NOT EXISTS checkpoints_session_id_order_idx
 			ON checkpoints (session_id, order_index);

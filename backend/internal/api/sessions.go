@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/geo"
 )
 
 type checkpointInput struct {
@@ -23,17 +24,25 @@ type createSessionInput struct {
 	Route       string            `json:"route"`
 	GracePeriod int               `json:"grace_period"`
 	Checkpoints []checkpointInput `json:"checkpoints"`
+	// RouteGeometry is optional: the full walking-route polyline (ordered
+	// lat/lng points) from the client's routing lookup. When present, each
+	// checkpoint's along-route position is precomputed and stored so that
+	// later location updates can measure "progress along the intended
+	// route" instead of requiring an exact-radius hit on each pin - see
+	// internal/geo.ProjectOntoPolyline and UpdateLocationHandler.
+	RouteGeometry []geo.Point `json:"route_geometry"`
 }
 
 type checkpointResponse struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	Status       string     `json:"status"`
-	ExpectedTime *time.Time `json:"expected_time"`
-	Lat          *float64   `json:"lat"`
-	Lng          *float64   `json:"lng"`
-	RadiusMeters int        `json:"radius_meters"`
-	OrderIndex   int        `json:"order_index"`
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	Status         string     `json:"status"`
+	ExpectedTime   *time.Time `json:"expected_time"`
+	Lat            *float64   `json:"lat"`
+	Lng            *float64   `json:"lng"`
+	RadiusMeters   int        `json:"radius_meters"`
+	OrderIndex     int        `json:"order_index"`
+	DistanceMeters *float64   `json:"distance_meters,omitempty"`
 }
 
 type sessionResponse struct {
@@ -46,6 +55,10 @@ type sessionResponse struct {
 	StartedAt   time.Time            `json:"started_at"`
 	CompletedAt *time.Time           `json:"completed_at"`
 	Checkpoints []checkpointResponse `json:"checkpoints"`
+
+	RouteTotalMeters *float64 `json:"route_total_meters,omitempty"`
+	ProgressMeters   float64  `json:"progress_meters"`
+	RouteDeviation   bool     `json:"route_deviation"`
 }
 
 func CreateSessionHandler(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +80,30 @@ func CreateSessionHandler(w http.ResponseWriter, r *http.Request) {
 		req.GracePeriod = 5
 	}
 
+	// If the client sent a route polyline, precompute its total length and
+	// each checkpoint's along-route distance now, once, rather than
+	// re-projecting the whole polyline on every future location update.
+	var routeGeometryJSON []byte
+	var routeTotalMeters *float64
+	checkpointDistances := make([]*float64, len(req.Checkpoints))
+
+	if len(req.RouteGeometry) > 0 {
+		var err error
+		routeGeometryJSON, err = json.Marshal(req.RouteGeometry)
+		if err != nil {
+			http.Error(w, "invalid route geometry", http.StatusBadRequest)
+			return
+		}
+		_, total := geo.CumulativeDistances(req.RouteGeometry)
+		routeTotalMeters = &total
+
+		for i, cp := range req.Checkpoints {
+			_, progress := geo.ProjectOntoPolyline(req.RouteGeometry, cp.Lat, cp.Lng)
+			d := progress
+			checkpointDistances[i] = &d
+		}
+	}
+
 	tx, err := db.Pool.Begin(r.Context())
 	if err != nil {
 		http.Error(w, "failed to start session", http.StatusInternalServerError)
@@ -76,9 +113,9 @@ func CreateSessionHandler(w http.ResponseWriter, r *http.Request) {
 
 	var sessionID string
 	err = tx.QueryRow(r.Context(),
-		`INSERT INTO sessions (user_id, name, route, status, grace_period)
-		 VALUES ($1, $2, $3, 'active', $4) RETURNING id`,
-		userID, req.Name, req.Route, req.GracePeriod,
+		`INSERT INTO sessions (user_id, name, route, status, grace_period, route_geometry, route_total_meters)
+		 VALUES ($1, $2, $3, 'active', $4, $5, $6) RETURNING id`,
+		userID, req.Name, req.Route, req.GracePeriod, routeGeometryJSON, routeTotalMeters,
 	).Scan(&sessionID)
 	if err != nil {
 		http.Error(w, "failed to create session", http.StatusInternalServerError)
@@ -91,9 +128,9 @@ func CreateSessionHandler(w http.ResponseWriter, r *http.Request) {
 			radius = 75
 		}
 		_, err = tx.Exec(r.Context(),
-			`INSERT INTO checkpoints (session_id, name, status, expected_time, lat, lng, radius_meters, order_index)
-			 VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7)`,
-			sessionID, cp.Name, cp.ExpectedTime, cp.Lat, cp.Lng, radius, i,
+			`INSERT INTO checkpoints (session_id, name, status, expected_time, lat, lng, radius_meters, order_index, distance_meters)
+			 VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8)`,
+			sessionID, cp.Name, cp.ExpectedTime, cp.Lat, cp.Lng, radius, i, checkpointDistances[i],
 		)
 		if err != nil {
 			http.Error(w, "failed to create checkpoint", http.StatusInternalServerError)
@@ -117,12 +154,14 @@ func GetSessionHandler(w http.ResponseWriter, r *http.Request) {
 
 	var session sessionResponse
 	err := db.Pool.QueryRow(r.Context(),
-		`SELECT id, user_id, name, route, status, grace_period, started_at, completed_at
+		`SELECT id, user_id, name, route, status, grace_period, started_at, completed_at,
+		        route_total_meters, progress_meters, route_deviation
 		 FROM sessions WHERE id = $1 AND user_id = $2`,
 		sessionID, userID,
 	).Scan(
 		&session.ID, &session.UserID, &session.Name, &session.Route, &session.Status,
 		&session.GracePeriod, &session.StartedAt, &session.CompletedAt,
+		&session.RouteTotalMeters, &session.ProgressMeters, &session.RouteDeviation,
 	)
 	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
@@ -164,7 +203,8 @@ func ListSessionsHandler(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 
 	rows, err := db.Pool.Query(r.Context(),
-		`SELECT id, user_id, name, route, status, grace_period, started_at, completed_at
+		`SELECT id, user_id, name, route, status, grace_period, started_at, completed_at,
+		        route_total_meters, progress_meters, route_deviation
 		 FROM sessions WHERE user_id = $1 ORDER BY started_at DESC`,
 		userID,
 	)
@@ -180,6 +220,7 @@ func ListSessionsHandler(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&session.ID, &session.UserID, &session.Name, &session.Route, &session.Status,
 			&session.GracePeriod, &session.StartedAt, &session.CompletedAt,
+			&session.RouteTotalMeters, &session.ProgressMeters, &session.RouteDeviation,
 		); err != nil {
 			http.Error(w, "failed to read sessions", http.StatusInternalServerError)
 			return
@@ -206,7 +247,7 @@ func ListSessionsHandler(w http.ResponseWriter, r *http.Request) {
 
 func loadCheckpoints(ctx context.Context, sessionID string) ([]checkpointResponse, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, name, status, expected_time, lat, lng, radius_meters, order_index
+		`SELECT id, name, status, expected_time, lat, lng, radius_meters, order_index, distance_meters
 		 FROM checkpoints WHERE session_id = $1 ORDER BY order_index ASC`,
 		sessionID,
 	)
@@ -221,6 +262,7 @@ func loadCheckpoints(ctx context.Context, sessionID string) ([]checkpointRespons
 		if err := rows.Scan(
 			&checkpoint.ID, &checkpoint.Name, &checkpoint.Status, &checkpoint.ExpectedTime,
 			&checkpoint.Lat, &checkpoint.Lng, &checkpoint.RadiusMeters, &checkpoint.OrderIndex,
+			&checkpoint.DistanceMeters,
 		); err != nil {
 			return nil, err
 		}

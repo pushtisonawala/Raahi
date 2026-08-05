@@ -7,9 +7,9 @@ import { PlaceAutocomplete } from '@/components/place-autocomplete'
 import { apiFetch } from '@/lib/api'
 import { useAuth } from '@/lib/auth-context'
 import { useContacts } from '@/lib/hooks'
-import { ArrowRight, ArrowLeft, Plus, X, GripVertical } from 'lucide-react'
+import { ArrowRight, ArrowLeft, X, Footprints, Car, CheckCircle2 } from 'lucide-react'
 import type { Checkpoint } from '@/lib/types'
-import { getRouteCheckpoints, type GeocodedPlace } from '@/lib/route'
+import { getRouteCheckpoints, type GeocodedPlace, type RoutePoint, type TravelMode } from '@/lib/route'
 
 export default function SessionNewPage() {
   const router = useRouter()
@@ -22,31 +22,31 @@ export default function SessionNewPage() {
   const [gracePeriod, setGracePeriod] = useState(5)
   const [selectedContacts, setSelectedContacts] = useState<string[]>([])
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([])
-  const [newCheckpoint, setNewCheckpoint] = useState({ name: '', expectedTime: 10, lat: 0, lng: 0 })
+  const [travelMode, setTravelMode] = useState<TravelMode>('walking')
   const [routeStartPlace, setRouteStartPlace] = useState('')
   const [routeEndPlace, setRouteEndPlace] = useState('')
   const [selectedStartPlace, setSelectedStartPlace] = useState<GeocodedPlace | null>(null)
   const [selectedEndPlace, setSelectedEndPlace] = useState<GeocodedPlace | null>(null)
   const [isGeneratingCheckpoints, setIsGeneratingCheckpoints] = useState(false)
   const [routeError, setRouteError] = useState<string | null>(null)
-  const [draggedId, setDraggedId] = useState<string | null>(null)
+  const [routeGeometry, setRouteGeometry] = useState<RoutePoint[]>([])
+  const [routeConfirmation, setRouteConfirmation] = useState<{
+    mode: TravelMode
+    averageKmh: number
+    totalMeters: number
+    totalSeconds: number
+    scheduledTotalSeconds: number
+    trafficBufferApplied: boolean
+  } | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
-  const handleAddCheckpoint = () => {
-    if (!newCheckpoint.name) return
-    const checkpoint: Checkpoint = {
-      id: Date.now().toString(),
-      name: newCheckpoint.name,
-      expectedTime: newCheckpoint.expectedTime,
-      location: { lat: newCheckpoint.lat, lng: newCheckpoint.lng },
-      status: 'pending',
-    }
-    setCheckpoints([...checkpoints, checkpoint])
-    setNewCheckpoint({ name: '', expectedTime: 10, lat: 0, lng: 0 })
-  }
-
-  const handleGenerateCheckpoints = async () => {
+  // Takes an explicit mode instead of reading the travelMode state directly,
+  // so it can be called immediately from the mode-toggle buttons with the
+  // *new* mode before React has re-rendered - otherwise clicking "Driving"
+  // right after generating a walking route would still read the stale
+  // "walking" value from the closure and silently regenerate the same route.
+  const generateCheckpointsForMode = async (mode: TravelMode) => {
     if (!selectedStartPlace || !selectedEndPlace) {
       setRouteError('Choose a start and destination from the suggestions.')
       return
@@ -54,17 +54,34 @@ export default function SessionNewPage() {
 
     setIsGeneratingCheckpoints(true)
     setRouteError(null)
+    setRouteConfirmation(null)
 
     try {
       const startPlace = selectedStartPlace
       const endPlace = selectedEndPlace
-      setRoute(`${startPlace.name} to ${endPlace.name}`)
+      const modeLabel = mode === 'driving' ? 'Drive' : 'Walk'
+      setRoute(`${modeLabel}: ${startPlace.name} to ${endPlace.name}`)
 
-      const generated = await getRouteCheckpoints(startPlace.lat, startPlace.lng, endPlace.lat, endPlace.lng, new Date())
+      const {
+        checkpoints: generated,
+        geometry,
+        averageKmh,
+        totalMeters,
+        totalSeconds,
+        scheduledTotalSeconds,
+        trafficBufferApplied,
+      } = await getRouteCheckpoints(startPlace.lat, startPlace.lng, endPlace.lat, endPlace.lng, new Date(), mode)
       if (generated.length === 0) {
         setRouteError('No checkpoints were generated for that route.')
         return
       }
+
+      setRouteGeometry(geometry)
+      // Not just an assumption - this is what the routing API actually
+      // confirmed it computed the timings for (checked against both its own
+      // mode tag and the implied pace). Shown to the user so "walking" vs
+      // "driving" is never a silent guess.
+      setRouteConfirmation({ mode, averageKmh, totalMeters, totalSeconds, scheduledTotalSeconds, trafficBufferApplied })
 
       const generatedCheckpoints: Checkpoint[] = generated.map((checkpoint, index) => {
         const expectedMinutes = Math.max(
@@ -92,30 +109,25 @@ export default function SessionNewPage() {
     }
   }
 
+  const handleGenerateCheckpoints = () => generateCheckpointsForMode(travelMode)
+
+  // Switching Walking/Driving used to only clear the confirmation banner,
+  // leaving the previously generated checkpoint list on screen untouched -
+  // which looked exactly like a bug (both modes "showing the same result")
+  // unless you remembered to press "Generate checkpoints" again. Now the
+  // toggle itself re-fetches immediately when a route is already set up.
+  const handleModeChange = (mode: TravelMode) => {
+    setTravelMode(mode)
+    if (selectedStartPlace && selectedEndPlace) {
+      void generateCheckpointsForMode(mode)
+    } else {
+      setCheckpoints([])
+      setRouteConfirmation(null)
+    }
+  }
+
   const handleDeleteCheckpoint = (id: string) => {
     setCheckpoints(checkpoints.filter((c) => c.id !== id))
-  }
-
-  const handleDragStart = (id: string) => {
-    setDraggedId(id)
-  }
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-  }
-
-  const handleDrop = (targetId: string) => {
-    if (!draggedId || draggedId === targetId) return
-
-    const draggedIndex = checkpoints.findIndex((c) => c.id === draggedId)
-    const targetIndex = checkpoints.findIndex((c) => c.id === targetId)
-
-    const newCheckpoints = [...checkpoints]
-    newCheckpoints.splice(draggedIndex, 1)
-    newCheckpoints.splice(targetIndex, 0, checkpoints[draggedIndex])
-
-    setCheckpoints(newCheckpoints)
-    setDraggedId(null)
   }
 
   const handleToggleContact = (contactId: string) => {
@@ -150,6 +162,12 @@ export default function SessionNewPage() {
               lng: checkpoint.location.lng,
               radius_meters: 75,
             })),
+            // Lets the backend measure progress-along-route instead of
+            // requiring an exact-radius hit on each checkpoint, so taking a
+            // different street than this specific OSRM path doesn't cause
+            // false "overdue" alerts. Empty if checkpoints were only added
+            // manually (no route was ever generated).
+            route_geometry: routeGeometry,
           }),
         },
         token
@@ -214,12 +232,43 @@ export default function SessionNewPage() {
         {step === 2 && (
           <div className="space-y-6">
             <div>
-              <label className="block text-sm font-medium text-foreground mb-4">Generate or add checkpoints</label>
+              <label className="block text-sm font-medium text-foreground mb-4">Set your route</label>
               <div className="space-y-4 mb-6 p-4 bg-card rounded-lg border border-border">
                 <div>
-                  <p className="text-sm font-medium text-foreground mb-2">Generate from place names</p>
+                  <p className="text-sm font-medium text-foreground mb-2">How are you getting there?</p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleModeChange('walking')}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                        travelMode === 'walking'
+                          ? 'bg-beacon-amber text-ink-indigo border-beacon-amber'
+                          : 'bg-input text-foreground border-border hover:border-beacon-amber/50'
+                      }`}
+                    >
+                      <Footprints size={16} />
+                      Walking
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleModeChange('driving')}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                        travelMode === 'driving'
+                          ? 'bg-beacon-amber text-ink-indigo border-beacon-amber'
+                          : 'bg-input text-foreground border-border hover:border-beacon-amber/50'
+                      }`}
+                    >
+                      <Car size={16} />
+                      Driving
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-foreground mb-2">Start and destination</p>
                   <p className="text-xs text-muted-foreground mb-4">
-                    Enter simple place names or addresses. The app will look up the coordinates for you.
+                    Enter simple place names or addresses. We&apos;ll look up the real {travelMode} route
+                    between them and generate checkpoints spaced along it automatically — more checkpoints
+                    for a longer route, fewer for a short one.
                   </p>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -261,58 +310,41 @@ export default function SessionNewPage() {
                   <span className="text-xs text-muted-foreground">This replaces the current checkpoint list.</span>
                 </div>
                 {routeError && <p className="text-sm text-alert-coral">{routeError}</p>}
-              </div>
-
-              <label className="block text-sm font-medium text-foreground mb-4">Add checkpoints manually</label>
-              <div className="space-y-3 mb-4">
-                <div>
-                  <input
-                    type="text"
-                    value={newCheckpoint.name}
-                    onChange={(e) => setNewCheckpoint({ ...newCheckpoint, name: e.target.value })}
-                    placeholder="Checkpoint name (e.g., Park entrance)"
-                    className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-beacon-amber text-sm"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-muted-foreground mb-1">Expected time (min)</label>
-                    <input
-                      type="number"
-                      min="1"
-                      value={newCheckpoint.expectedTime}
-                      onChange={(e) =>
-                        setNewCheckpoint({ ...newCheckpoint, expectedTime: parseInt(e.target.value) || 1 })
-                      }
-                      className="w-full px-3 py-2 bg-input border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-beacon-amber text-sm"
-                    />
+                {routeConfirmation && (
+                  <div className="space-y-1">
+                    <p className="flex items-center gap-2 text-sm text-safe-teal">
+                      <CheckCircle2 size={16} />
+                      Confirmed via routing API: {routeConfirmation.mode} pace, ~
+                      {routeConfirmation.averageKmh.toFixed(1)} km/h over{' '}
+                      {(routeConfirmation.totalMeters / 1000).toFixed(1)} km
+                      {' '}(raw ETA ~{Math.round(routeConfirmation.totalSeconds / 60)} min)
+                    </p>
+                    {routeConfirmation.trafficBufferApplied && (
+                      <p className="text-xs text-muted-foreground">
+                        Driving ETAs from this routing service assume clear roads with no traffic. Checkpoint
+                        times are padded to ~{Math.round(routeConfirmation.scheduledTotalSeconds / 60)} min
+                        (+60%) so real traffic doesn&apos;t trigger a false overdue alert.
+                      </p>
+                    )}
                   </div>
-                  <div className="flex items-end">
-                    <button
-                      onClick={handleAddCheckpoint}
-                      className="w-full px-3 py-2 bg-beacon-amber text-ink-indigo rounded-lg font-medium hover:bg-amber-500 transition-colors text-sm flex items-center justify-center gap-2"
-                    >
-                      <Plus size={16} />
-                      Add
-                    </button>
-                  </div>
-                </div>
+                )}
               </div>
 
               {checkpoints.length > 0 && (
                 <div className="space-y-2">
-                  <p className="text-xs font-medium text-muted-foreground">Checkpoints (drag to reorder):</p>
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Checkpoints, in route order. This order is set by your actual path, so it isn&apos;t
+                    editable — but you can remove ones you don&apos;t need.
+                  </p>
                   <div className="space-y-2">
-                    {checkpoints.map((checkpoint) => (
+                    {checkpoints.map((checkpoint, index) => (
                       <div
                         key={checkpoint.id}
-                        draggable
-                        onDragStart={() => handleDragStart(checkpoint.id)}
-                        onDragOver={handleDragOver}
-                        onDrop={() => handleDrop(checkpoint.id)}
-                        className="flex items-center gap-3 p-3 bg-muted rounded-lg cursor-grab active:cursor-grabbing"
+                        className="flex items-center gap-3 p-3 bg-muted rounded-lg"
                       >
-                        <GripVertical size={16} className="text-muted-foreground" />
+                        <div className="flex h-6 w-6 flex-none items-center justify-center rounded-full bg-card text-xs font-semibold text-muted-foreground">
+                          {index + 1}
+                        </div>
                         <div className="flex-1 min-w-0">
                           <p className="font-medium text-sm text-foreground truncate">{checkpoint.name}</p>
                           <p className="text-xs text-muted-foreground">{checkpoint.expectedTime} min</p>
@@ -409,6 +441,10 @@ export default function SessionNewPage() {
               <div className="border-t border-border pt-4">
                 <p className="text-xs font-medium text-muted-foreground uppercase">Route</p>
                 <p className="text-foreground mt-1">{route}</p>
+              </div>
+              <div className="border-t border-border pt-4">
+                <p className="text-xs font-medium text-muted-foreground uppercase">Travel mode</p>
+                <p className="text-foreground mt-1 capitalize">{travelMode}</p>
               </div>
               <div className="border-t border-border pt-4">
                 <p className="text-xs font-medium text-muted-foreground uppercase">Checkpoints</p>

@@ -111,24 +111,27 @@ func sendOverdueEmail(ctx context.Context, checkpointID string) error {
 		return nil
 	}
 
-	var recipientEmail string
+	var recipientEmail, checkpointName string
 	err := db.Pool.QueryRow(ctx,
-		`SELECT u.email
+		`SELECT u.email, c.name
 		 FROM checkpoints c
 		 JOIN sessions s ON s.id = c.session_id
 		 JOIN users u ON u.id = s.user_id
 		 WHERE c.id = $1`,
 		checkpointID,
-	).Scan(&recipientEmail)
+	).Scan(&recipientEmail, &checkpointName)
 	if err != nil {
 		return err
 	}
 
 	subject := "Safety check-in from Raahi"
-	plainBody := fmt.Sprintf("Your Raahi checkpoint %s is overdue. Please check in as soon as possible.", checkpointID)
+	// Was interpolating the raw checkpoint UUID here instead of its name -
+	// fixed to use the actual checkpoint (e.g. "1st Cross Road") like the
+	// contacts-alerted email below already does.
+	plainBody := fmt.Sprintf("Your Raahi checkpoint \"%s\" is overdue. Please check in as soon as possible.", checkpointName)
 	htmlBody := fmt.Sprintf(
 		"<p>Your Raahi checkpoint <strong>%s</strong> is overdue.</p><p>Please check in as soon as possible.</p>",
-		checkpointID,
+		checkpointName,
 	)
 
 	return notify.SendEmail(recipientEmail, subject, plainBody, htmlBody)
@@ -143,14 +146,27 @@ func sendContactEmails(ctx context.Context, checkpointID string) error {
 
 	var checkpointName string
 	var userID string
+	var lastLat, lastLng *float64
 	if err := db.Pool.QueryRow(ctx,
-		`SELECT c.name, s.user_id
+		`SELECT c.name, s.user_id, s.last_lat, s.last_lng
 		 FROM checkpoints c
 		 JOIN sessions s ON s.id = c.session_id
 		 WHERE c.id = $1`,
 		checkpointID,
-	).Scan(&checkpointName, &userID); err != nil {
+	).Scan(&checkpointName, &userID, &lastLat, &lastLng); err != nil {
 		return err
+	}
+
+	// Same fix as the SOS email: a raw lat/lng pair isn't actionable in an
+	// emergency, a tappable map pin is. This is the alert that actually goes
+	// out to trusted contacts when someone is overdue, so it matters at
+	// least as much as the SOS email that a location link is here.
+	plainLocationText := "Location unavailable."
+	htmlLocationText := "Location unavailable."
+	if lastLat != nil && lastLng != nil {
+		mapsURL := fmt.Sprintf("https://www.google.com/maps?q=%f,%f", *lastLat, *lastLng)
+		plainLocationText = fmt.Sprintf("Last known location: %s (%f, %f)", mapsURL, *lastLat, *lastLng)
+		htmlLocationText = fmt.Sprintf(`Last known location: <a href="%s">view on map</a> (%f, %f)`, mapsURL, *lastLat, *lastLng)
 	}
 
 	rows, err := db.Pool.Query(ctx,
@@ -170,8 +186,15 @@ func sendContactEmails(ctx context.Context, checkpointID string) error {
 		if err := rows.Scan(&contactName, &contactEmail); err != nil {
 			return err
 		}
-		plainBody := fmt.Sprintf("%s, a checkpoint for %s was missed. Please reach out and check on them.", contactName, checkpointName)
-		htmlBody := strings.Join([]string{"<p><strong>", contactName, "</strong>, a checkpoint for ", checkpointName, " was missed.</p>", "<p>Please reach out and check on them.</p>"}, "")
+		plainBody := fmt.Sprintf(
+			"%s, a checkpoint for %s was missed. Please reach out and check on them.\n\n%s",
+			contactName, checkpointName, plainLocationText,
+		)
+		htmlBody := strings.Join([]string{
+			"<p><strong>", contactName, "</strong>, a checkpoint for ", checkpointName, " was missed.</p>",
+			"<p>Please reach out and check on them.</p>",
+			"<p>", htmlLocationText, "</p>",
+		}, "")
 		if err := notify.SendEmail(contactEmail, "Checking in from Raahi", plainBody, htmlBody); err != nil {
 			return err
 		}

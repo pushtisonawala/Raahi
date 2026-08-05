@@ -1,3 +1,5 @@
+// Unchanged logic from the web app's lib/route.ts - plain fetch calls to
+// Geoapify and OSRM, framework agnostic. Only the env var prefix changed.
 export type GeneratedCheckpoint = {
   name: string
   lat: number
@@ -45,7 +47,7 @@ export async function searchPlaces(
   const trimmedQuery = query.trim()
   if (trimmedQuery.length < 3) return []
 
-  const apiKey = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY
+  const apiKey = process.env.EXPO_PUBLIC_GEOAPIFY_API_KEY
   if (!apiKey) throw new Error('Geoapify API key is not configured')
 
   const params = new URLSearchParams({
