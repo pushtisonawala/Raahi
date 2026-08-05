@@ -63,6 +63,16 @@ func Migrate() {
 		CREATE INDEX IF NOT EXISTS contacts_user_id_created_at_idx
 			ON contacts (user_id, created_at DESC);
 
+		-- The CREATE TABLE above only sets ON DELETE CASCADE for brand-new
+		-- databases. Any database created before that clause was added still
+		-- has the old constraint with no cascade, so deleting a user fails
+		-- with a foreign key violation instead of cleaning up their contacts.
+		-- Drop and recreate the constraint on every boot so existing
+		-- databases actually get the cascade behavior the schema promises.
+		ALTER TABLE contacts DROP CONSTRAINT IF EXISTS contacts_user_id_fkey;
+		ALTER TABLE contacts ADD CONSTRAINT contacts_user_id_fkey
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+
 		CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
 			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -103,6 +113,11 @@ func Migrate() {
 
 		CREATE INDEX IF NOT EXISTS sessions_user_id_started_at_idx
 			ON sessions (user_id, started_at DESC);
+
+		-- Same retrofit as contacts above.
+		ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_user_id_fkey;
+		ALTER TABLE sessions ADD CONSTRAINT sessions_user_id_fkey
+			FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
 
 		CREATE TABLE IF NOT EXISTS checkpoints (
 			id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
