@@ -15,9 +15,11 @@ import (
 )
 
 const (
-	gracePeriod1 = 5 * time.Minute // wait after expected_time before pinging
-	gracePeriod2 = 3 * time.Minute // wait after ping before escalating
-	tickInterval = 15 * time.Second
+	// secondaryGracePeriod is the fixed extra wait after the "Are you OK?"
+	// check-in prompt before contacts actually get alerted - not
+	// user-configurable, unlike the grace period below.
+	secondaryGracePeriod = 3 * time.Minute
+	tickInterval         = 15 * time.Second
 )
 
 func Run(ctx context.Context, pool *pgxpool.Pool) {
@@ -56,10 +58,22 @@ func sweepOnce(ctx context.Context, pool *pgxpool.Pool) {
 		rows.Close()
 	}
 
+	// Stage 2 used to always wait a hardcoded 5 minutes here regardless of
+	// what the session's own grace period was set to - the "Are you OK?"
+	// prompt is supposed to appear once you're that many minutes late (the
+	// wizard tells the user exactly this: "If you're X minutes late...
+	// we'll check on you"), but the setting was never actually read. It
+	// happened to look right for anyone who left the default (5 min)
+	// alone, and silently did nothing for anyone who changed it. Joining to
+	// sessions and using its real grace_period fixes that.
 	rows, err = pool.Query(ctx,
-		`UPDATE checkpoints SET status = 'pinged'
-		 WHERE status = 'overdue' AND expected_time <= now() - $1::interval
-		 RETURNING id, session_id`, gracePeriod1)
+		`UPDATE checkpoints
+		 SET status = 'pinged'
+		 FROM sessions
+		 WHERE checkpoints.session_id = sessions.id
+		   AND checkpoints.status = 'overdue'
+		   AND checkpoints.expected_time <= now() - (sessions.grace_period * interval '1 minute')
+		 RETURNING checkpoints.id, checkpoints.session_id`)
 	if err != nil {
 		log.Printf("sweeper stage2 error: %v", err)
 	} else {
@@ -79,9 +93,13 @@ func sweepOnce(ctx context.Context, pool *pgxpool.Pool) {
 	}
 
 	rows, err = pool.Query(ctx,
-		`UPDATE checkpoints SET status = 'contacts_alerted'
-		 WHERE status = 'pinged' AND expected_time <= now() - $1::interval
-		 RETURNING id, session_id`, gracePeriod1+gracePeriod2)
+		`UPDATE checkpoints
+		 SET status = 'contacts_alerted'
+		 FROM sessions
+		 WHERE checkpoints.session_id = sessions.id
+		   AND checkpoints.status = 'pinged'
+		   AND checkpoints.expected_time <= now() - (sessions.grace_period * interval '1 minute') - $1::interval
+		 RETURNING checkpoints.id, checkpoints.session_id`, secondaryGracePeriod)
 	if err != nil {
 		log.Printf("sweeper stage3 error: %v", err)
 	} else {
