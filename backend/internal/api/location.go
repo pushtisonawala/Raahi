@@ -19,6 +19,18 @@ import (
 // mean something.
 const corridorToleranceMeters = 60.0
 
+// maxPlausibleSpeedMetersPerSecond bounds how far progress can advance in a
+// single location update, based on how much real time has actually passed.
+// ~30 m/s (108 km/h) comfortably covers fast city driving while still ruling
+// out an instant "jump" to somewhere far down the route. Without this, being
+// within the route corridor was enough by itself: the very first ping after
+// starting a session could project onto whatever point on the route line
+// happens to be nearest right now - which might be hundreds of meters or
+// more past Start - and credit all of that as "progress" in one shot, even
+// though no time had passed to actually travel there. Progress is capped to
+// what's physically plausible since the last known position instead.
+const maxPlausibleSpeedMetersPerSecond = 30.0
+
 type locationRequest struct {
 	Lat float64 `json:"lat"`
 	Lng float64 `json:"lng"`
@@ -40,10 +52,13 @@ func UpdateLocationHandler(w http.ResponseWriter, r *http.Request) {
 
 	var routeGeometryJSON []byte
 	var progressMeters float64
+	var lastLocationAt *time.Time
+	var startedAt time.Time
 	err := db.Pool.QueryRow(r.Context(),
-		`SELECT route_geometry, progress_meters FROM sessions WHERE id = $1 AND user_id = $2`,
+		`SELECT route_geometry, progress_meters, last_location_at, started_at
+		 FROM sessions WHERE id = $1 AND user_id = $2`,
 		sessionID, userID,
-	).Scan(&routeGeometryJSON, &progressMeters)
+	).Scan(&routeGeometryJSON, &progressMeters, &lastLocationAt, &startedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.Error(w, "session not found", http.StatusNotFound)
@@ -51,6 +66,13 @@ func UpdateLocationHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, "failed to load session", http.StatusInternalServerError)
 		return
+	}
+
+	// Reference point for "how much time has actually passed" - the last
+	// update we got, or session start if this is the first ping ever.
+	referenceTime := startedAt
+	if lastLocationAt != nil {
+		referenceTime = *lastLocationAt
 	}
 
 	var routeGeometry []geo.Point
@@ -61,7 +83,7 @@ func UpdateLocationHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(routeGeometry) > 1 {
-		if err := updateLocationWithRouteProgress(r, sessionID, userID, req, routeGeometry, progressMeters); err != nil {
+		if err := updateLocationWithRouteProgress(r, sessionID, userID, req, routeGeometry, progressMeters, referenceTime); err != nil {
 			http.Error(w, "failed to update location", http.StatusInternalServerError)
 			return
 		}
@@ -94,6 +116,7 @@ func updateLocationWithRouteProgress(
 	req locationRequest,
 	routeGeometry []geo.Point,
 	storedProgress float64,
+	referenceTime time.Time,
 ) error {
 	deviation, rawProgress := geo.ProjectOntoPolyline(routeGeometry, req.Lat, req.Lng)
 	offRoute := deviation > corridorToleranceMeters
@@ -110,9 +133,27 @@ func updateLocationWithRouteProgress(
 	// Progress never goes backwards either: a noisy GPS ping that projects
 	// slightly earlier than where we already know the person reached
 	// shouldn't undo that progress.
+	//
+	// Being within the corridor isn't enough on its own, though - being
+	// near *some* point on the route doesn't mean you walked there from
+	// where you last were. Cap how far progress can jump in one update to
+	// what's physically plausible given how much time has actually passed,
+	// so a ping that happens to land near a point far down the route
+	// (e.g. the very first ping after starting, before you've gone
+	// anywhere) can't instantly mark Start - or any later checkpoint -
+	// reached without genuinely, gradually getting there.
+	elapsedSeconds := time.Since(referenceTime).Seconds()
+	if elapsedSeconds < 0 {
+		elapsedSeconds = 0
+	}
+	maxPlausibleProgress := storedProgress + elapsedSeconds*maxPlausibleSpeedMetersPerSecond
+
 	newProgress := storedProgress
 	if !offRoute && rawProgress > newProgress {
 		newProgress = rawProgress
+		if newProgress > maxPlausibleProgress {
+			newProgress = maxPlausibleProgress
+		}
 	}
 
 	tag, err := db.Pool.Exec(r.Context(),
