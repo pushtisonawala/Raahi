@@ -16,6 +16,17 @@ import (
 func main() {
 	_ = godotenv.Load()
 
+	// backend/.env is gitignored (it holds secrets), so it never makes it
+	// into a deployed environment like Render - those platforms only read
+	// environment variables set in their own dashboard. Without this check,
+	// a missing SMTP config fails completely silently: sweeper.go's email
+	// functions just no-op, and SOS emails fail deep inside notify.SendEmail
+	// with only a per-request log line easy to miss. This one is impossible
+	// to miss in the boot log.
+	if os.Getenv("SMTP_EMAIL") == "" || os.Getenv("SMTP_PASSWORD") == "" {
+		log.Println("WARNING: SMTP_EMAIL and/or SMTP_PASSWORD are not set - SOS alerts and check-in emails will NOT be sent. Set them in your hosting provider's environment variables (not just a local .env file).")
+	}
+
 	r := chi.NewRouter()
 	r.Use(api.CORS)
 	r.Get("/health", func(w http.ResponseWriter, req *http.Request) {

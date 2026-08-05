@@ -21,12 +21,18 @@ export default function SessionActivePage() {
 
   const { session, loading } = useSessionData(sessionId)
   const { contacts } = useContacts()
-  const isActive = session?.status === 'active'
+  // Keep sending location updates through 'sos_triggered' too, not just
+  // 'active' - stopping live tracking the instant someone asks for help is
+  // exactly backwards for a safety app; that's when your contacts most need
+  // an up-to-date position, not a frozen one.
+  const isActive = session?.status === 'active' || session?.status === 'sos_triggered'
   const { status: locationStatus, lastSent } = useLiveLocation(sessionId, isActive)
 
   const [elapsedTime, setElapsedTime] = useState(0)
   const [showCountdownModal, setShowCountdownModal] = useState(false)
   const [showEscalationModal, setShowEscalationModal] = useState(false)
+  const [isSendingSOS, setIsSendingSOS] = useState(false)
+  const [sosError, setSosError] = useState<string | null>(null)
 
   const checkpoints = session?.checkpoints ?? []
   const currentCheckpointIndex = useMemo(
@@ -76,11 +82,30 @@ export default function SessionActivePage() {
   }
 
   const handleSOS = async () => {
-    await apiFetch(
-      `/sessions/${encodeURIComponent(sessionId)}/sos`,
-      { method: 'POST' },
-      token
-    )
+    if (isSendingSOS) return
+    // The old version awaited this with no try/catch at all - a failed
+    // request (network blip, expired token, backend hiccup) just vanished
+    // with zero feedback, which is exactly why pressing SOS could feel like
+    // "nothing happened." Now a failure surfaces immediately and can be
+    // retried, and success shows an unmistakable confirmation instead of
+    // only a small status-badge change.
+    setIsSendingSOS(true)
+    setSosError(null)
+    try {
+      await apiFetch(
+        `/sessions/${encodeURIComponent(sessionId)}/sos`,
+        { method: 'POST' },
+        token
+      )
+    } catch (error) {
+      setSosError(
+        error instanceof Error
+          ? error.message
+          : 'Could not reach the server. Check your connection and try again.'
+      )
+    } finally {
+      setIsSendingSOS(false)
+    }
   }
 
   const formatTime = (seconds: number) => {
@@ -313,12 +338,14 @@ export default function SessionActivePage() {
               You missed a checkpoint. Walk or update your location to confirm you&apos;re fine -
               otherwise we&apos;ll alert your contacts shortly.
             </p>
+            {sosError && <p className="text-sm text-alert-coral mb-4">{sosError}</p>}
             <button
-              onClick={handleSOS}
-              className="w-full px-4 py-3 bg-alert-coral text-white font-semibold rounded-lg hover:bg-red-600 transition-colors flex items-center justify-center gap-2"
+              onClick={() => void handleSOS()}
+              disabled={isSendingSOS}
+              className="w-full px-4 py-3 bg-alert-coral text-white font-semibold rounded-lg hover:bg-red-600 transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
             >
               <Zap size={20} />
-              Send help now
+              {isSendingSOS ? 'Sending...' : 'Send help now'}
             </button>
           </div>
         </div>
@@ -346,7 +373,32 @@ export default function SessionActivePage() {
         </div>
       )}
 
-      <SOSButton onTrigger={handleSOS} />
+      {/* Pressing SOS used to give no confirmation beyond a small status-badge
+          text change - easy to miss, which is exactly why it could feel like
+          "nothing happened" even when the request succeeded. This modal is
+          unmissable and stays up until dismissed. */}
+      {session.status === 'sos_triggered' && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center">
+          <div className="w-full max-w-md bg-background rounded-lg p-8 text-center border-2 border-alert-coral">
+            <div className="mb-6 flex justify-center">
+              <Zap className="text-alert-coral" size={48} />
+            </div>
+            <h2 className="text-2xl font-bold text-alert-coral mb-2">SOS sent</h2>
+            <p className="text-muted-foreground mb-6">
+              Your trusted contacts have been emailed with your last known location. Live tracking
+              is still on - stay where you are if it&apos;s safe to do so.
+            </p>
+            <button
+              onClick={() => router.push('/history')}
+              className="w-full px-4 py-3 bg-beacon-amber text-ink-indigo font-semibold rounded-lg hover:bg-amber-500 transition-colors"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
+      <SOSButton onTrigger={() => void handleSOS()} disabled={isSendingSOS} />
     </div>
   )
 }

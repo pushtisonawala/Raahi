@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import {
   ActivityIndicator,
+  Alert,
   Linking,
   Modal,
   Pressable,
@@ -37,12 +38,17 @@ export default function SessionActiveScreen() {
 
   const { session, loading } = useSessionData(sessionId)
   const { contacts } = useContacts()
-  const isActive = session?.status === 'active'
+  // Keep sending location updates through 'sos_triggered' too, not just
+  // 'active' - stopping live tracking the instant someone asks for help is
+  // exactly backwards for a safety app; that's when your contacts most need
+  // an up-to-date position, not a frozen one.
+  const isActive = session?.status === 'active' || session?.status === 'sos_triggered'
   const { status: locationStatus, lastSent } = useLiveLocation(sessionId, isActive)
 
   const [elapsedTime, setElapsedTime] = useState(0)
   const [showCountdownModal, setShowCountdownModal] = useState(false)
   const [showEscalationModal, setShowEscalationModal] = useState(false)
+  const [isSendingSOS, setIsSendingSOS] = useState(false)
 
   const checkpoints = session?.checkpoints ?? []
   const currentCheckpointIndex = useMemo(
@@ -83,8 +89,27 @@ export default function SessionActiveScreen() {
   }
 
   const handleSOS = async () => {
-    if (!sessionId) return
-    await apiFetch(`/sessions/${encodeURIComponent(sessionId)}/sos`, { method: 'POST' }, token)
+    if (!sessionId || isSendingSOS) return
+    // The old version awaited this with no try/catch at all - a failed
+    // request (network blip, expired token, backend hiccup) just vanished
+    // into an unhandled promise rejection with zero feedback, which is
+    // exactly why pressing SOS could feel like "nothing happened." Now a
+    // failure surfaces immediately and can be retried, and success shows an
+    // unmistakable confirmation instead of only a small status-badge change.
+    setIsSendingSOS(true)
+    try {
+      await apiFetch(`/sessions/${encodeURIComponent(sessionId)}/sos`, { method: 'POST' }, token)
+    } catch (error) {
+      Alert.alert(
+        'SOS failed to send',
+        error instanceof Error
+          ? error.message
+          : 'Could not reach the server. Check your connection and try again.',
+        [{ text: 'Try again', onPress: () => void handleSOS() }, { text: 'Cancel', style: 'cancel' }]
+      )
+    } finally {
+      setIsSendingSOS(false)
+    }
   }
 
   const formatTime = (seconds: number) => {
@@ -288,9 +313,19 @@ export default function SessionActiveScreen() {
               You missed a checkpoint. Walk or update your location to confirm you&apos;re fine -
               otherwise we&apos;ll alert your contacts shortly.
             </Text>
-            <Pressable onPress={() => void handleSOS()} style={styles.sosModalButton}>
-              <Zap size={20} color={colors.white} />
-              <Text style={styles.sosModalButtonText}>Send help now</Text>
+            <Pressable
+              onPress={() => void handleSOS()}
+              disabled={isSendingSOS}
+              style={[styles.sosModalButton, isSendingSOS && styles.disabled]}
+            >
+              {isSendingSOS ? (
+                <ActivityIndicator size="small" color={colors.white} />
+              ) : (
+                <Zap size={20} color={colors.white} />
+              )}
+              <Text style={styles.sosModalButtonText}>
+                {isSendingSOS ? 'Sending...' : 'Send help now'}
+              </Text>
             </Pressable>
           </View>
         </View>
@@ -313,7 +348,27 @@ export default function SessionActiveScreen() {
         </View>
       </Modal>
 
-      <SOSButton onTrigger={() => void handleSOS()} />
+      {/* Pressing SOS used to give no confirmation beyond a small status-badge
+          text change - easy to miss, which is exactly why it could feel like
+          "nothing happened" even when the request succeeded. This modal is
+          unmissable and stays up until the person dismisses it. */}
+      <Modal visible={session.status === 'sos_triggered'} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, styles.escalationModalCard]}>
+            <Zap size={48} color={colors.alertCoral} style={styles.modalIcon} />
+            <Text style={[styles.modalTitle, styles.escalationModalTitle]}>SOS sent</Text>
+            <Text style={[styles.mutedText, styles.modalDescription]}>
+              Your trusted contacts have been emailed with your last known location. Live
+              tracking is still on - stay where you are if it&apos;s safe to do so.
+            </Text>
+            <Pressable onPress={() => router.replace('/history')} style={styles.doneButton}>
+              <Text style={styles.doneButtonText}>OK</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <SOSButton onTrigger={() => void handleSOS()} disabled={isSendingSOS} />
     </View>
   )
 }
@@ -471,6 +526,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   sosModalButtonText: { color: colors.white, fontWeight: '700' },
+  disabled: { opacity: 0.6 },
   doneButton: {
     width: '100%',
     alignItems: 'center',

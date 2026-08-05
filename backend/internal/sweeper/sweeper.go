@@ -108,6 +108,12 @@ func sendOverdueEmail(ctx context.Context, checkpointID string) error {
 	from := os.Getenv("SMTP_EMAIL")
 	password := os.Getenv("SMTP_PASSWORD")
 	if from == "" || password == "" {
+		// This used to return nil with no log at all, which made a missing
+		// SMTP config indistinguishable from "everything's fine, nothing to
+		// send" - see the startup check in main.go for the loud version of
+		// this warning; this one confirms it's the actual reason a specific
+		// email didn't go out.
+		log.Printf("sweeper: SMTP not configured, skipping overdue email for checkpoint %s", checkpointID)
 		return nil
 	}
 
@@ -141,6 +147,7 @@ func sendContactEmails(ctx context.Context, checkpointID string) error {
 	from := os.Getenv("SMTP_EMAIL")
 	password := os.Getenv("SMTP_PASSWORD")
 	if from == "" || password == "" {
+		log.Printf("sweeper: SMTP not configured, skipping contact-alert email for checkpoint %s", checkpointID)
 		return nil
 	}
 
