@@ -3,7 +3,7 @@
 // version embedded OpenStreetMap in an <iframe>, here the identical embed URL
 // is loaded in a WebView, with a "open in Maps" action via Linking for
 // parity with the web app's external link.
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import {
   ActivityIndicator,
@@ -27,7 +27,20 @@ import { useAuth } from '@/lib/auth-context'
 import { useContacts } from '@/lib/hooks'
 import { useLiveLocation } from '@/lib/hooks/useLiveLocation'
 import { useSessionData } from '@/lib/hooks/useSessionData'
+import { getRouteCheckpoints } from '@/lib/route'
 import { colors } from '@/lib/theme'
+
+// How many consecutive off-route location pings (each ~10-15s apart, see
+// useLiveLocation) it takes before we auto-reroute, and how long to wait
+// after a reroute before trying again. The original design just froze
+// progress the moment you were more than 60m from the one path OSRM picked
+// at session start - fine if you walk that exact path, wrong the moment you
+// take a shortcut, a different street, or a closed road gets in the way.
+// Requiring a streak (not a single ping) avoids rerouting on one noisy GPS
+// blip; the cooldown avoids hammering the routing API/backend if deviation
+// persists across many pings in a row.
+const OFF_ROUTE_STREAK_THRESHOLD = 3
+const REROUTE_COOLDOWN_MS = 60_000
 
 export default function SessionActiveScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
@@ -37,6 +50,10 @@ export default function SessionActiveScreen() {
   const insets = useSafeAreaInsets()
 
   const { session, loading } = useSessionData(sessionId)
+  const [isRerouting, setIsRerouting] = useState(false)
+  const [rerouteError, setRerouteError] = useState<string | null>(null)
+  const offRouteStreakRef = useRef(0)
+  const lastRerouteAtRef = useRef(0)
   const { contacts } = useContacts()
   // Keep sending location updates through 'sos_triggered' too, not just
   // 'active' - stopping live tracking the instant someone asks for help is
@@ -81,6 +98,76 @@ export default function SessionActiveScreen() {
     setShowCountdownModal(checkpoints.some((checkpoint) => checkpoint.status === 'pinged'))
     setShowEscalationModal(checkpoints.some((checkpoint) => checkpoint.status === 'contacts_alerted'))
   }, [checkpoints])
+
+  // Recomputes a route from wherever the walker currently is to the same
+  // destination, using the exact same lib/route.ts lookup the wizard used to
+  // build the original route (same mode, same mismatch/pace validation,
+  // same traffic buffer for driving), then hands it to the backend's
+  // /reroute endpoint to swap in as the new plan. This is what turns
+  // "off route" from a dead end into "recalculating," the way turn-by-turn
+  // nav apps behave.
+  const handleReroute = async (destLat: number, destLng: number) => {
+    if (!sessionId || !lastSent) return
+    setIsRerouting(true)
+    setRerouteError(null)
+    try {
+      const mode = session?.travel_mode === 'driving' ? 'driving' : 'walking'
+      const result = await getRouteCheckpoints(
+        lastSent.lat,
+        lastSent.lng,
+        destLat,
+        destLng,
+        new Date(),
+        mode
+      )
+      await apiFetch(
+        `/sessions/${encodeURIComponent(sessionId)}/reroute`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            checkpoints: result.checkpoints,
+            route_geometry: result.geometry,
+          }),
+        },
+        token
+      )
+      // The backend broadcasts a websocket event on success, which
+      // useSessionData's onmessage handler picks up to refetch - no manual
+      // refresh needed here.
+    } catch (error) {
+      setRerouteError(
+        error instanceof Error ? error.message : 'Could not recalculate the route.'
+      )
+    } finally {
+      setIsRerouting(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!session || session.status !== 'active' || !lastSent) {
+      offRouteStreakRef.current = 0
+      return
+    }
+    if (!session.route_total_meters) return // no route to recalculate against
+
+    if (!session.route_deviation) {
+      offRouteStreakRef.current = 0
+      return
+    }
+
+    offRouteStreakRef.current += 1
+    if (offRouteStreakRef.current < OFF_ROUTE_STREAK_THRESHOLD) return
+    if (isRerouting) return
+    if (Date.now() - lastRerouteAtRef.current < REROUTE_COOLDOWN_MS) return
+
+    const destination = session.checkpoints.find((checkpoint) => checkpoint.name === 'Destination')
+    if (!destination || destination.lat === null || destination.lng === null) return
+
+    offRouteStreakRef.current = 0
+    lastRerouteAtRef.current = Date.now()
+    void handleReroute(destination.lat, destination.lng)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, lastSent, isRerouting])
 
   const handleCompleteSession = async () => {
     if (!sessionId) return
@@ -156,13 +243,21 @@ export default function SessionActiveScreen() {
         </View>
         <View style={styles.statusRow}>
           <StatusBadge status={session.status} />
-          {session.route_deviation && (
+          {isRerouting ? (
             <View style={styles.offRouteBadge}>
-              <AlertCircle size={12} color={colors.alertCoral} />
-              <Text style={styles.offRouteBadgeText}>Off route</Text>
+              <ActivityIndicator size="small" color={colors.alertCoral} />
+              <Text style={styles.offRouteBadgeText}>Recalculating route...</Text>
             </View>
+          ) : (
+            session.route_deviation && (
+              <View style={styles.offRouteBadge}>
+                <AlertCircle size={12} color={colors.alertCoral} />
+                <Text style={styles.offRouteBadgeText}>Off route</Text>
+              </View>
+            )
           )}
         </View>
+        {rerouteError && <Text style={styles.deniedText}>{rerouteError}</Text>}
         {session.route_total_meters ? (
           <View style={styles.routeProgressBlock}>
             <View style={styles.routeProgressLabelRow}>

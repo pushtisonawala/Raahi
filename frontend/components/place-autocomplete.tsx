@@ -10,6 +10,10 @@ type PlaceAutocompleteProps = {
   placeholder: string
   onValueChange: (value: string) => void
   onSelect: (place: GeocodedPlace) => void
+  // Biases suggestions toward this position (typically the user's current
+  // location) instead of ranking purely on generic text relevance. See
+  // lib/route.ts#searchPlaces for why this matters.
+  near?: { lat: number; lng: number }
 }
 
 export function PlaceAutocomplete({
@@ -18,6 +22,7 @@ export function PlaceAutocomplete({
   placeholder,
   onValueChange,
   onSelect,
+  near,
 }: PlaceAutocompleteProps) {
   const listboxId = useId()
   const requestIdRef = useRef(0)
@@ -39,7 +44,7 @@ export function PlaceAutocomplete({
     const timer = setTimeout(async () => {
       setLoading(true)
       try {
-        const places = await searchPlaces(query, controller.signal)
+        const places = await searchPlaces(query, controller.signal, near)
         if (requestId !== requestIdRef.current) return
         setSuggestions(places)
         setActiveIndex(-1)
@@ -56,7 +61,8 @@ export function PlaceAutocomplete({
       clearTimeout(timer)
       controller.abort()
     }
-  }, [value])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, near?.lat, near?.lng])
 
   const selectPlace = (place: GeocodedPlace) => {
     onSelect(place)

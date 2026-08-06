@@ -43,6 +43,10 @@ export type SessionData = {
   route_total_meters?: number | null
   progress_meters: number
   route_deviation: boolean
+  // Which routing profile (walking/driving) this session's route was
+  // computed with - needed so an auto-reroute (see the active session page)
+  // asks the routing API for the same kind of route again.
+  travel_mode: 'walking' | 'driving'
 }
 
 const WS_URL = API_URL.replace(/^http/, 'ws')

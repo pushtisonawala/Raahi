@@ -15,7 +15,8 @@
       "bundleIdentifier": "com.raahi.mobile",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Raahi shares your live location with trusted contacts during an active safety session.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "Raahi shares your live location with trusted contacts during an active safety session, including while the app is in the background."
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Raahi shares your live location with trusted contacts during an active safety session, including while the app is in the background.",
+        "UIBackgroundModes": ["location"]
       }
     },
     "android": {
@@ -24,8 +25,14 @@
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
       ]
     },
     "plugins": [

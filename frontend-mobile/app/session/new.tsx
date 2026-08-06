@@ -5,7 +5,7 @@
 // (see route.ts and the web page for why: order has to match
 // distance-along-route, which is what the backend actually uses to mark a
 // checkpoint reached).
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'expo-router'
 import {
   Alert,
@@ -16,6 +16,7 @@ import {
   TextInput,
   View,
 } from 'react-native'
+import * as Location from 'expo-location'
 import { ArrowLeft, ArrowRight, X, Footprints, Car, CheckCircle2 } from 'lucide-react-native'
 import { PlaceAutocomplete } from '@/components/place-autocomplete'
 import { apiFetch } from '@/lib/api'
@@ -56,6 +57,30 @@ export default function SessionNewScreen() {
   } | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // The device's own position, used only to bias place search results
+  // toward wherever the user actually is (see lib/route.ts#searchPlaces) -
+  // not stored or sent anywhere else. Silently stays null if permission is
+  // denied or unavailable; search just falls back to unbiased results.
+  const [deviceLocation, setDeviceLocation] = useState<{ lat: number; lng: number } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync()
+      if (cancelled || status !== 'granted') return
+      try {
+        const position = await Location.getCurrentPositionAsync({})
+        if (!cancelled) {
+          setDeviceLocation({ lat: position.coords.latitude, lng: position.coords.longitude })
+        }
+      } catch {
+        // Unavailable - place search just stays unbiased.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Takes an explicit mode instead of reading the travelMode state directly,
   // so it can be called immediately from the mode-toggle buttons with the
@@ -166,6 +191,11 @@ export default function SessionNewScreen() {
             name: sessionName,
             route,
             grace_period: gracePeriod,
+            // Stored so the active-session screen can ask the routing API
+            // for the same walking/driving profile again if it ever needs
+            // to auto-reroute (see lib/route.ts and the active session
+            // screen's handling of route_deviation).
+            travel_mode: travelMode,
             checkpoints: checkpoints.map((checkpoint) => ({
               name: checkpoint.name,
               expected_time: new Date(Date.now() + checkpoint.expectedTime * 60_000).toISOString(),
@@ -290,6 +320,7 @@ export default function SessionNewScreen() {
                   setSelectedStartPlace(place)
                 }}
                 placeholder="Home, office, or an address"
+                near={deviceLocation ?? undefined}
               />
               <PlaceAutocomplete
                 label="Destination"
@@ -303,6 +334,7 @@ export default function SessionNewScreen() {
                   setSelectedEndPlace(place)
                 }}
                 placeholder="Park, market, or destination"
+                near={deviceLocation ?? undefined}
               />
             </View>
             <Pressable

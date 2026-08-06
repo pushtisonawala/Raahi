@@ -111,6 +111,14 @@ func Migrate() {
 			ADD COLUMN IF NOT EXISTS progress_meters DOUBLE PRECISION NOT NULL DEFAULT 0,
 			ADD COLUMN IF NOT EXISTS route_deviation BOOLEAN NOT NULL DEFAULT FALSE;
 
+		-- Which routing profile (walking/driving) this session's route was
+		-- computed with. Needed so that an auto-reroute (see
+		-- POST /sessions/:id/reroute) can ask the same routing API for the
+		-- same mode again, instead of guessing - a walking session that
+		-- strays off path should get a new walking route, not a driving one.
+		ALTER TABLE sessions
+			ADD COLUMN IF NOT EXISTS travel_mode TEXT NOT NULL DEFAULT 'walking';
+
 		CREATE INDEX IF NOT EXISTS sessions_user_id_started_at_idx
 			ON sessions (user_id, started_at DESC);
 

@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { AlertCircle, CheckCircle2, Clock, ExternalLink, Home, MapPin, Zap } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Clock, ExternalLink, Home, MapPin, RefreshCw, Zap } from 'lucide-react'
 import { BeaconDot } from '@/components/beacon-dot'
 import { Header } from '@/components/header'
 import { SOSButton } from '@/components/sos-button'
@@ -12,6 +12,19 @@ import { useAuth } from '@/lib/auth-context'
 import { useContacts } from '@/lib/hooks'
 import { useLiveLocation } from '@/lib/hooks/useLiveLocation'
 import { useSessionData } from '@/lib/hooks/useSessionData'
+import { getRouteCheckpoints } from '@/lib/route'
+
+// How many consecutive off-route location pings (each ~10-15s apart, see
+// useLiveLocation) it takes before we auto-reroute, and how long to wait
+// after a reroute before trying again. The original design just froze
+// progress the moment you were more than 60m from the one path OSRM picked
+// at session start - fine if you walk that exact path, wrong the moment you
+// take a shortcut, a different street, or a closed road gets in the way.
+// Requiring a streak (not a single ping) avoids rerouting on one noisy GPS
+// blip; the cooldown avoids hammering the routing API/backend if deviation
+// persists across many pings in a row.
+const OFF_ROUTE_STREAK_THRESHOLD = 3
+const REROUTE_COOLDOWN_MS = 60_000
 
 export default function SessionActivePage() {
   const params = useParams()
@@ -33,6 +46,10 @@ export default function SessionActivePage() {
   const [showEscalationModal, setShowEscalationModal] = useState(false)
   const [isSendingSOS, setIsSendingSOS] = useState(false)
   const [sosError, setSosError] = useState<string | null>(null)
+  const [isRerouting, setIsRerouting] = useState(false)
+  const [rerouteError, setRerouteError] = useState<string | null>(null)
+  const offRouteStreakRef = useRef(0)
+  const lastRerouteAtRef = useRef(0)
 
   const checkpoints = session?.checkpoints ?? []
   const currentCheckpointIndex = useMemo(
@@ -71,6 +88,76 @@ export default function SessionActivePage() {
       checkpoints.some((checkpoint) => checkpoint.status === 'contacts_alerted')
     )
   }, [checkpoints])
+
+  // Recomputes a route from wherever the walker currently is to the same
+  // destination, using the exact same lib/route.ts lookup the wizard used to
+  // build the original route (same mode, same mismatch/pace validation,
+  // same traffic buffer for driving), then hands it to the backend's
+  // /reroute endpoint to swap in as the new plan. This is what turns
+  // "off route" from a dead end into "recalculating," the way turn-by-turn
+  // nav apps behave.
+  const handleReroute = async (destLat: number, destLng: number) => {
+    if (!lastSent) return
+    setIsRerouting(true)
+    setRerouteError(null)
+    try {
+      const mode = session?.travel_mode === 'driving' ? 'driving' : 'walking'
+      const result = await getRouteCheckpoints(
+        lastSent.lat,
+        lastSent.lng,
+        destLat,
+        destLng,
+        new Date(),
+        mode
+      )
+      await apiFetch(
+        `/sessions/${encodeURIComponent(sessionId)}/reroute`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            checkpoints: result.checkpoints,
+            route_geometry: result.geometry,
+          }),
+        },
+        token
+      )
+      // The backend broadcasts a websocket event on success, which
+      // useSessionData's onmessage handler picks up to refetch - no manual
+      // refresh needed here.
+    } catch (error) {
+      setRerouteError(
+        error instanceof Error ? error.message : 'Could not recalculate the route.'
+      )
+    } finally {
+      setIsRerouting(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!session || session.status !== 'active' || !lastSent) {
+      offRouteStreakRef.current = 0
+      return
+    }
+    if (!session.route_total_meters) return // no route to recalculate against
+
+    if (!session.route_deviation) {
+      offRouteStreakRef.current = 0
+      return
+    }
+
+    offRouteStreakRef.current += 1
+    if (offRouteStreakRef.current < OFF_ROUTE_STREAK_THRESHOLD) return
+    if (isRerouting) return
+    if (Date.now() - lastRerouteAtRef.current < REROUTE_COOLDOWN_MS) return
+
+    const destination = session.checkpoints.find((checkpoint) => checkpoint.name === 'Destination')
+    if (!destination || destination.lat === null || destination.lng === null) return
+
+    offRouteStreakRef.current = 0
+    lastRerouteAtRef.current = Date.now()
+    void handleReroute(destination.lat, destination.lng)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, lastSent, isRerouting])
 
   const handleCompleteSession = async () => {
     await apiFetch(
@@ -164,13 +251,21 @@ export default function SessionActivePage() {
           </div>
           <div className="flex items-center gap-4 mt-4">
             <StatusBadge status={session.status} />
-            {session.route_deviation && (
+            {isRerouting ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-alert-coral/10 px-3 py-1 text-xs font-medium text-alert-coral">
-                <AlertCircle size={12} />
-                Off route
+                <RefreshCw size={12} className="animate-spin" />
+                Recalculating route...
               </span>
+            ) : (
+              session.route_deviation && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-alert-coral/10 px-3 py-1 text-xs font-medium text-alert-coral">
+                  <AlertCircle size={12} />
+                  Off route
+                </span>
+              )
             )}
           </div>
+          {rerouteError && <p className="text-xs text-alert-coral mt-2">{rerouteError}</p>}
           {session.route_total_meters ? (
             <div className="mt-4">
               <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">

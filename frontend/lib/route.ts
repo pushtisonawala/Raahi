@@ -40,7 +40,17 @@ type GeoapifyResult = {
 
 export async function searchPlaces(
   query: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  // Where to prioritize results from. Without this, Geoapify ranks purely on
+  // text relevance with no location context, so a query like "park" or
+  // "market" while standing in Bangalore could easily surface a
+  // better-known match in a different city entirely before any nearby
+  // option - which is what "very limited set of places showing" actually
+  // was: not too few results existing, but the relevant nearby ones losing
+  // to unrelated better-known ones with an identical name. Passing the
+  // user's current position as a proximity bias fixes the ranking without
+  // hard-excluding anything.
+  near?: { lat: number; lng: number }
 ): Promise<GeocodedPlace[]> {
   const trimmedQuery = query.trim()
   if (trimmedQuery.length < 3) return []
@@ -51,9 +61,16 @@ export async function searchPlaces(
   const params = new URLSearchParams({
     text: trimmedQuery,
     format: 'json',
-    limit: '5',
+    // Was hardcoded to 5, which is what made it feel like only a tiny
+    // sliver of a city's places ever showed up. 20 gives enough room to
+    // actually scroll through nearby options instead of getting cut off
+    // after a handful of the "most globally relevant" matches.
+    limit: '20',
     apiKey,
   })
+  if (near) {
+    params.set('bias', `proximity:${near.lng},${near.lat}`)
+  }
   const res = await fetch(`https://api.geoapify.com/v1/geocode/autocomplete?${params}`, {
     signal,
   })
