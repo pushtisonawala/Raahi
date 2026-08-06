@@ -26,6 +26,25 @@ import { getRouteCheckpoints } from '@/lib/route'
 const OFF_ROUTE_STREAK_THRESHOLD = 3
 const REROUTE_COOLDOWN_MS = 60_000
 
+// Each checkpoint already carries a real expected_time from the routing
+// API's own per-segment timing (see lib/route.ts) - it just wasn't shown
+// anywhere once a session was actually running, only during setup. This
+// turns that into "~8 min (by 3:45 PM)" while still ahead of it, or
+// "3:40 PM (5 min ago)" once it's passed, which doubles as a plain-language
+// answer to "how much time should I take to reach there."
+function formatExpectedTime(iso: string | null): string | null {
+  if (!iso) return null
+  const target = new Date(iso)
+  if (Number.isNaN(target.getTime())) return null
+
+  const diffMinutes = Math.round((target.getTime() - Date.now()) / 60000)
+  const clock = target.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+
+  if (diffMinutes > 0) return `~${diffMinutes} min (by ${clock})`
+  if (diffMinutes < 0) return `${clock} (${Math.abs(diffMinutes)} min ago)`
+  return `by ${clock}`
+}
+
 export default function SessionActivePage() {
   const params = useParams()
   const router = useRouter()
@@ -374,6 +393,12 @@ export default function SessionActivePage() {
                   </div>
                   <div className="flex-1">
                     <h3 className="font-semibold text-foreground">{checkpoint.name}</h3>
+                    {formatExpectedTime(checkpoint.expected_time) && (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Clock size={16} />
+                        <span>{formatExpectedTime(checkpoint.expected_time)}</span>
+                      </div>
+                    )}
                     {checkpoint.lat !== null && checkpoint.lng !== null && (
                       <div className="flex items-center gap-2 text-sm text-muted-foreground">
                         <MapPin size={16} />

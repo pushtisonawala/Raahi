@@ -251,85 +251,138 @@ function validateRouteMode(
   }
 }
 
-// OSRM's turn-by-turn steps already carry everything a real checkpoint
-// needs: a road/place name (step.name) and exact distance/duration for that
-// segment - straight from the routing engine, not guessed client-side. So
-// "generate checkpoints" is really just "walk the steps and pick well-spaced
-// ones," using each step's own name and cumulative timing.
 const CHECKPOINT_INTERVAL_METERS = 800
 const MAX_INTERMEDIATE_CHECKPOINTS = 6
 const MIN_ROUTE_METERS_FOR_INTERMEDIATE = 300
 
-type StepWaypoint = {
-  lat: number
-  lng: number
+// Each OSRM step covers a distance/duration range along the route -
+// [startDistance, startDistance + distance). Kept as ranges (not just a
+// single point per step, like the old maneuver-only approach) so any
+// distance along the whole route can be mapped back to "which step, and how
+// far into it."
+type StepRange = {
   name: string
-  // Distance/duration already covered by the time you reach this point -
-  // i.e. this step hasn't been walked yet, but everything before it has.
-  cumulativeDistance: number
-  cumulativeDuration: number
+  startDistance: number
+  distance: number
+  startDuration: number
+  duration: number
 }
 
-function buildStepWaypoints(steps: OsrmStep[]): StepWaypoint[] {
-  const waypoints: StepWaypoint[] = []
+function buildStepRanges(steps: OsrmStep[]): StepRange[] {
+  const ranges: StepRange[] = []
   let cumulativeDistance = 0
   let cumulativeDuration = 0
 
   for (const step of steps) {
-    const location = step.maneuver?.location
-    if (location) {
-      waypoints.push({
-        lat: location[1],
-        lng: location[0],
-        name: step.name?.trim() ?? '',
-        cumulativeDistance,
-        cumulativeDuration,
-      })
-    }
-    cumulativeDistance += step.distance ?? 0
-    cumulativeDuration += step.duration ?? 0
+    const distance = step.distance ?? 0
+    const duration = step.duration ?? 0
+    ranges.push({
+      name: step.name?.trim() ?? '',
+      startDistance: cumulativeDistance,
+      distance,
+      startDuration: cumulativeDuration,
+      duration,
+    })
+    cumulativeDistance += distance
+    cumulativeDuration += duration
   }
 
-  return waypoints
+  return ranges
 }
 
-// Scans outward in both directions from an unnamed waypoint for the nearest
-// step that does have a name. Unnamed steps are common on real routes -
-// short unclassified footways, driveways, minor lanes - and are exactly what
-// used to fall back to a bare "Checkpoint 3": meaningless on its own, but a
-// named street is very likely a few steps away in either direction on the
-// same route.
-function findNearestNamedWaypoint(waypoints: StepWaypoint[], fromIndex: number): string | null {
-  for (let distance = 1; distance < waypoints.length; distance++) {
-    const before = waypoints[fromIndex - distance]
+function findStepRangeIndex(ranges: StepRange[], distance: number): number {
+  for (let i = 0; i < ranges.length; i++) {
+    const range = ranges[i]
+    if (distance < range.startDistance + range.distance || i === ranges.length - 1) {
+      return i
+    }
+  }
+  return Math.max(0, ranges.length - 1)
+}
+
+// A step's own duration only tells you how long the *whole* step takes -
+// this interpolates for a point partway through it, assuming roughly
+// constant pace across the step (true enough for an 800m sampling interval).
+function interpolateDuration(range: StepRange, distance: number): number {
+  if (range.distance <= 0) return range.startDuration
+  const progress = Math.min(1, Math.max(0, (distance - range.startDistance) / range.distance))
+  return range.startDuration + progress * range.duration
+}
+
+// Scans outward in both directions from an unnamed step for the nearest one
+// that does have a name. Unnamed steps are common on real routes - short
+// unclassified footways, driveways, minor lanes - and are exactly what used
+// to fall back to a bare "Checkpoint 3": meaningless on its own, but a named
+// street is very likely a few steps away in either direction on the same
+// route.
+function findNearestNamedStepRange(ranges: StepRange[], fromIndex: number): string | null {
+  for (let distance = 1; distance < ranges.length; distance++) {
+    const before = ranges[fromIndex - distance]
     if (before?.name) return before.name
-    const after = waypoints[fromIndex + distance]
+    const after = ranges[fromIndex + distance]
     if (after?.name) return after.name
   }
   return null
 }
 
 // Picks the best available label for a checkpoint, in order of how good the
-// information actually is: OSRM's own name for that exact step, then the
-// nearest named street elsewhere on the route, then (only if the entire
+// information actually is: OSRM's own name for the step at this point, then
+// the nearest named street elsewhere on the route, then (only if the entire
 // route has nothing named nearby, which is rare) whatever a reverse-geocode
 // lookup says is actually at that spot. A numbered "Checkpoint N" is the
 // last resort, not the default it used to be.
 async function resolveCheckpointName(
-  waypoint: StepWaypoint,
-  index: number,
-  waypoints: StepWaypoint[],
+  ranges: StepRange[],
+  rangeIndex: number,
+  lat: number,
+  lng: number,
   intermediateIndex: number
 ): Promise<string> {
-  if (waypoint.name) return waypoint.name
+  const range = ranges[rangeIndex]
+  if (range?.name) return range.name
 
-  const nearestNamed = findNearestNamedWaypoint(waypoints, index)
+  const nearestNamed = findNearestNamedStepRange(ranges, rangeIndex)
   if (nearestNamed) return `Near ${nearestNamed}`
 
-  const reverseGeocoded = await reverseGeocodePlaceName(waypoint.lat, waypoint.lng)
+  const reverseGeocoded = await reverseGeocodePlaceName(lat, lng)
   if (reverseGeocoded) return reverseGeocoded
 
   return `Checkpoint ${intermediateIndex}`
+}
+
+// Great-circle distance between two route points, used to reconstruct real
+// arc-length distance along OSRM's raw geometry (which has many more points
+// than just its turn-by-turn maneuvers).
+function haversineMeters(a: RoutePoint, b: RoutePoint): number {
+  const earthRadiusMeters = 6_371_000
+  const toRadians = (deg: number) => (deg * Math.PI) / 180
+  const dLat = toRadians(b.lat - a.lat)
+  const dLng = toRadians(b.lng - a.lng)
+  const sinDLat = Math.sin(dLat / 2)
+  const sinDLng = Math.sin(dLng / 2)
+  const h =
+    sinDLat * sinDLat +
+    Math.cos(toRadians(a.lat)) * Math.cos(toRadians(b.lat)) * sinDLng * sinDLng
+  return 2 * earthRadiusMeters * Math.asin(Math.min(1, Math.sqrt(h)))
+}
+
+type GeometrySample = { lat: number; lng: number; cumulativeDistance: number }
+
+// Walks OSRM's raw route geometry (dense points along the actual path) and
+// tags each point with its real arc-length distance from the start. This -
+// not the handful of turn-by-turn maneuver points - is what checkpoint
+// spacing is now based on, so a long, mostly-straight stretch of road with
+// few or no turns still gets checkpoints every ~800m instead of none at all.
+function buildGeometrySamples(geometry: RoutePoint[]): GeometrySample[] {
+  const samples: GeometrySample[] = []
+  let cumulativeDistance = 0
+
+  for (let i = 0; i < geometry.length; i++) {
+    if (i > 0) cumulativeDistance += haversineMeters(geometry[i - 1], geometry[i])
+    samples.push({ lat: geometry[i].lat, lng: geometry[i].lng, cumulativeDistance })
+  }
+
+  return samples
 }
 
 export async function getRouteCheckpoints(
@@ -386,39 +439,46 @@ export async function getRouteCheckpoints(
 
   // Number of stops scales with how long the route actually is, instead of
   // always dropping exactly one fixed "Midpoint" regardless of whether the
-  // route is 300m or 30km.
-  if (steps.length > 2 && totalMeters >= MIN_ROUTE_METERS_FOR_INTERMEDIATE) {
-    const waypoints = buildStepWaypoints(steps)
-    // First waypoint is Start, last is Destination - both already added
-    // explicitly with the exact place names the user searched for, so only
-    // the ones in between are candidates.
-    const candidates = waypoints.slice(1, -1)
+  // route is 300m or 30km - and, since this samples the route's actual
+  // geometry rather than just its turn-by-turn maneuvers, a long stretch of
+  // road with few or no turns (a direct trip along one main road, say) still
+  // gets checkpoints every ~800m instead of the maneuver-only approach
+  // silently producing zero.
+  if (totalMeters >= MIN_ROUTE_METERS_FOR_INTERMEDIATE && geometry.length > 1) {
+    const stepRanges = buildStepRanges(steps)
+    const samples = buildGeometrySamples(geometry)
 
     let lastPickedDistance = 0
     let intermediateIndex = 0
-    for (const waypoint of candidates) {
+    for (const sample of samples) {
       if (intermediateIndex >= MAX_INTERMEDIATE_CHECKPOINTS) break
-      if (waypoint.cumulativeDistance - lastPickedDistance < CHECKPOINT_INTERVAL_METERS) continue
+      if (sample.cumulativeDistance - lastPickedDistance < CHECKPOINT_INTERVAL_METERS) continue
 
+      const rangeIndex = findStepRangeIndex(stepRanges, sample.cumulativeDistance)
       intermediateIndex += 1
       const name = await resolveCheckpointName(
-        waypoint,
-        waypoints.indexOf(waypoint),
-        waypoints,
+        stepRanges,
+        rangeIndex,
+        sample.lat,
+        sample.lng,
         intermediateIndex
       )
       checkpoints.push({
         name,
-        lat: waypoint.lat,
-        lng: waypoint.lng,
+        lat: sample.lat,
+        lng: sample.lng,
         // Real elapsed time to this exact point along the route, from
-        // OSRM's own per-step duration, padded by the traffic buffer for
-        // driving - not a distance-proportional guess either way.
+        // OSRM's own per-step duration interpolated across the step it
+        // falls within, padded by the traffic buffer for driving - not a
+        // distance-proportional guess either way.
         expected_time: new Date(
-          startTime.getTime() + waypoint.cumulativeDuration * timeMultiplier * 1000
+          startTime.getTime() +
+            interpolateDuration(stepRanges[rangeIndex], sample.cumulativeDistance) *
+              timeMultiplier *
+              1000
         ).toISOString(),
       })
-      lastPickedDistance = waypoint.cumulativeDistance
+      lastPickedDistance = sample.cumulativeDistance
     }
   }
 
