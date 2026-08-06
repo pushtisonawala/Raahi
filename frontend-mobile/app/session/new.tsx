@@ -23,7 +23,13 @@ import { apiFetch } from '@/lib/api'
 import { useAuth } from '@/lib/auth-context'
 import { useContacts } from '@/lib/hooks'
 import type { Checkpoint } from '@/lib/types'
-import { getRouteCheckpoints, type GeocodedPlace, type RoutePoint, type TravelMode } from '@/lib/route'
+import {
+  getRouteCheckpoints,
+  reverseGeocodePlaceName,
+  type GeocodedPlace,
+  type RoutePoint,
+  type TravelMode,
+} from '@/lib/route'
 import { colors } from '@/lib/theme'
 
 const TOTAL_STEPS = 5
@@ -62,6 +68,14 @@ export default function SessionNewScreen() {
   // not stored or sent anywhere else. Silently stays null if permission is
   // denied or unavailable; search just falls back to unbiased results.
   const [deviceLocation, setDeviceLocation] = useState<{ lat: number; lng: number } | null>(null)
+  // A suggested Start place built from the device's own position, offered
+  // rather than auto-filled - "fetch current location and ask if we have to
+  // start from there" - so typing a different start still works normally.
+  // Cleared once the user picks a start some other way, or dismisses it.
+  const [currentLocationSuggestion, setCurrentLocationSuggestion] = useState<GeocodedPlace | null>(
+    null
+  )
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -81,6 +95,23 @@ export default function SessionNewScreen() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    if (!deviceLocation) return
+    let cancelled = false
+    void reverseGeocodePlaceName(deviceLocation.lat, deviceLocation.lng).then((name) => {
+      if (cancelled) return
+      setCurrentLocationSuggestion({
+        id: 'current-location',
+        name: name ?? `${deviceLocation.lat.toFixed(5)}, ${deviceLocation.lng.toFixed(5)}`,
+        lat: deviceLocation.lat,
+        lng: deviceLocation.lng,
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [deviceLocation])
 
   // Takes an explicit mode instead of reading the travelMode state directly,
   // so it can be called immediately from the mode-toggle buttons with the
@@ -307,6 +338,28 @@ export default function SessionNewScreen() {
               between them and generate checkpoints spaced along it automatically - more checkpoints for
               a longer route, fewer for a short one.
             </Text>
+            {currentLocationSuggestion && !selectedStartPlace && !routeStartPlace && !suggestionDismissed && (
+              <View style={styles.suggestionBanner}>
+                <Text style={styles.suggestionText}>
+                  Use your current location as the start?{' '}
+                  <Text style={styles.suggestionPlaceName}>{currentLocationSuggestion.name}</Text>
+                </Text>
+                <View style={styles.suggestionActions}>
+                  <Pressable
+                    onPress={() => {
+                      setRouteStartPlace(currentLocationSuggestion.name)
+                      setSelectedStartPlace(currentLocationSuggestion)
+                    }}
+                    style={styles.suggestionUseButton}
+                  >
+                    <Text style={styles.suggestionUseButtonText}>Use this</Text>
+                  </Pressable>
+                  <Pressable onPress={() => setSuggestionDismissed(true)} hitSlop={8}>
+                    <X size={14} color={colors.mutedForeground} />
+                  </Pressable>
+                </View>
+              </View>
+            )}
             <View style={styles.placeRow}>
               <PlaceAutocomplete
                 label="Start place"
@@ -570,6 +623,28 @@ const styles = StyleSheet.create({
   confirmationRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   confirmationText: { fontSize: 13, color: colors.safeTeal, flex: 1 },
   placeRow: { gap: 12 },
+  suggestionBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 182, 72, 0.4)',
+    backgroundColor: 'rgba(255, 182, 72, 0.08)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  suggestionText: { flex: 1, fontSize: 12, color: colors.foreground },
+  suggestionPlaceName: { color: colors.mutedForeground },
+  suggestionActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  suggestionUseButton: {
+    backgroundColor: colors.beaconAmber,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  suggestionUseButtonText: { color: colors.inkIndigo, fontWeight: '700', fontSize: 12 },
   secondaryButton: {
     alignSelf: 'flex-start',
     backgroundColor: colors.beaconAmber,

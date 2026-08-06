@@ -38,26 +38,24 @@ type GeoapifyResult = {
   lon: number
 }
 
-export async function searchPlaces(
-  query: string,
-  signal?: AbortSignal,
-  // Where to prioritize results from. Without this, Geoapify ranks purely on
-  // text relevance with no location context, so a query like "park" or
-  // "market" while standing in Bangalore could easily surface a
-  // better-known match in a different city entirely before any nearby
-  // option - which is what "very limited set of places showing" actually
-  // was: not too few results existing, but the relevant nearby ones losing
-  // to unrelated better-known ones with an identical name. Passing the
-  // user's current position as a proximity bias fixes the ranking without
-  // hard-excluding anything.
-  near?: { lat: number; lng: number }
-): Promise<GeocodedPlace[]> {
-  const trimmedQuery = query.trim()
-  if (trimmedQuery.length < 3) return []
+// How far a "local area" extends around the user for place search - roughly
+// a large metro area's radius. Bias alone (below) only *reorders* results,
+// it doesn't guarantee your city actually wins the limited result slots:
+// for a common word ("park", "market", a chain name) Geoapify's text
+// relevance can still out-rank a same-named place a few km away even with
+// proximity bias applied, which is exactly what "still not showing every
+// place in Blr" was. A hard filter guarantees every result is actually
+// local. See the fallback below for when someone genuinely wants a
+// destination further away.
+const LOCAL_SEARCH_RADIUS_METERS = 60_000
 
-  const apiKey = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY
-  if (!apiKey) throw new Error('Geoapify API key is not configured')
-
+async function fetchGeoapifyAutocomplete(
+  trimmedQuery: string,
+  apiKey: string,
+  signal: AbortSignal | undefined,
+  near: { lat: number; lng: number } | undefined,
+  restrictToLocalArea: boolean
+): Promise<GeoapifyResult[]> {
   const params = new URLSearchParams({
     text: trimmedQuery,
     format: 'json',
@@ -70,21 +68,97 @@ export async function searchPlaces(
   })
   if (near) {
     params.set('bias', `proximity:${near.lng},${near.lat}`)
+    if (restrictToLocalArea) {
+      params.set('filter', `circle:${near.lng},${near.lat},${LOCAL_SEARCH_RADIUS_METERS}`)
+    }
   }
   const res = await fetch(`https://api.geoapify.com/v1/geocode/autocomplete?${params}`, {
     signal,
   })
-
   if (!res.ok) throw new Error('Could not look up places')
-
   const data = (await res.json()) as { results?: GeoapifyResult[] }
+  return data.results ?? []
+}
 
-  return (data.results ?? []).map((place) => ({
+export async function searchPlaces(
+  query: string,
+  signal?: AbortSignal,
+  // Where to prioritize (and, first, restrict) results to. See
+  // LOCAL_SEARCH_RADIUS_METERS above for why this is a hard filter, not
+  // just a ranking hint.
+  near?: { lat: number; lng: number }
+): Promise<GeocodedPlace[]> {
+  const trimmedQuery = query.trim()
+  if (trimmedQuery.length < 3) return []
+
+  const apiKey = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY
+  if (!apiKey) throw new Error('Geoapify API key is not configured')
+
+  let results = await fetchGeoapifyAutocomplete(trimmedQuery, apiKey, signal, near, true)
+
+  // Nothing turned up locally - the destination might genuinely be outside
+  // the immediate area (planning ahead for a trip to a different city, for
+  // instance) rather than actually not existing. Retry without the hard
+  // filter instead of just showing "no results" for something real.
+  if (results.length === 0 && near) {
+    results = await fetchGeoapifyAutocomplete(trimmedQuery, apiKey, signal, near, false)
+  }
+
+  return results.map((place) => ({
     id: place.place_id,
     name: place.formatted,
     lat: place.lat,
     lng: place.lon,
   }))
+}
+
+type GeoapifyReverseResult = {
+  formatted?: string
+  street?: string
+  suburb?: string
+  neighbourhood?: string
+  district?: string
+  city?: string
+}
+
+// Turns a bare coordinate into a short, human-readable place label. Used for
+// two things: labeling route checkpoints that land on an unnamed path (see
+// resolveCheckpointName below), and naming the "use my current location as
+// start" suggestion instead of showing raw lat/lng to confirm against.
+export async function reverseGeocodePlaceName(
+  lat: number,
+  lng: number,
+  signal?: AbortSignal
+): Promise<string | null> {
+  const apiKey = process.env.NEXT_PUBLIC_GEOAPIFY_API_KEY
+  if (!apiKey) return null
+
+  try {
+    const params = new URLSearchParams({
+      lat: String(lat),
+      lon: String(lng),
+      format: 'json',
+      apiKey,
+    })
+    const res = await fetch(`https://api.geoapify.com/v1/geocode/reverse?${params}`, { signal })
+    if (!res.ok) return null
+
+    const data = (await res.json()) as { results?: GeoapifyReverseResult[] }
+    const result = data.results?.[0]
+    if (!result) return null
+
+    return (
+      result.street ||
+      result.suburb ||
+      result.neighbourhood ||
+      result.district ||
+      result.city ||
+      result.formatted ||
+      null
+    )
+  } catch {
+    return null
+  }
 }
 
 export type TravelMode = 'walking' | 'driving'
@@ -219,6 +293,45 @@ function buildStepWaypoints(steps: OsrmStep[]): StepWaypoint[] {
   return waypoints
 }
 
+// Scans outward in both directions from an unnamed waypoint for the nearest
+// step that does have a name. Unnamed steps are common on real routes -
+// short unclassified footways, driveways, minor lanes - and are exactly what
+// used to fall back to a bare "Checkpoint 3": meaningless on its own, but a
+// named street is very likely a few steps away in either direction on the
+// same route.
+function findNearestNamedWaypoint(waypoints: StepWaypoint[], fromIndex: number): string | null {
+  for (let distance = 1; distance < waypoints.length; distance++) {
+    const before = waypoints[fromIndex - distance]
+    if (before?.name) return before.name
+    const after = waypoints[fromIndex + distance]
+    if (after?.name) return after.name
+  }
+  return null
+}
+
+// Picks the best available label for a checkpoint, in order of how good the
+// information actually is: OSRM's own name for that exact step, then the
+// nearest named street elsewhere on the route, then (only if the entire
+// route has nothing named nearby, which is rare) whatever a reverse-geocode
+// lookup says is actually at that spot. A numbered "Checkpoint N" is the
+// last resort, not the default it used to be.
+async function resolveCheckpointName(
+  waypoint: StepWaypoint,
+  index: number,
+  waypoints: StepWaypoint[],
+  intermediateIndex: number
+): Promise<string> {
+  if (waypoint.name) return waypoint.name
+
+  const nearestNamed = findNearestNamedWaypoint(waypoints, index)
+  if (nearestNamed) return `Near ${nearestNamed}`
+
+  const reverseGeocoded = await reverseGeocodePlaceName(waypoint.lat, waypoint.lng)
+  if (reverseGeocoded) return reverseGeocoded
+
+  return `Checkpoint ${intermediateIndex}`
+}
+
 export async function getRouteCheckpoints(
   startLat: number,
   startLng: number,
@@ -288,11 +401,14 @@ export async function getRouteCheckpoints(
       if (waypoint.cumulativeDistance - lastPickedDistance < CHECKPOINT_INTERVAL_METERS) continue
 
       intermediateIndex += 1
+      const name = await resolveCheckpointName(
+        waypoint,
+        waypoints.indexOf(waypoint),
+        waypoints,
+        intermediateIndex
+      )
       checkpoints.push({
-        // Real street/place name from OSRM. Some short unnamed paths (e.g.
-        // an unclassified footway) come back with an empty name - fall back
-        // to a numbered label only in that specific case.
-        name: waypoint.name || `Checkpoint ${intermediateIndex}`,
+        name,
         lat: waypoint.lat,
         lng: waypoint.lng,
         // Real elapsed time to this exact point along the route, from

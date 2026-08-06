@@ -9,7 +9,13 @@ import { useAuth } from '@/lib/auth-context'
 import { useContacts } from '@/lib/hooks'
 import { ArrowRight, ArrowLeft, X, Footprints, Car, CheckCircle2 } from 'lucide-react'
 import type { Checkpoint } from '@/lib/types'
-import { getRouteCheckpoints, type GeocodedPlace, type RoutePoint, type TravelMode } from '@/lib/route'
+import {
+  getRouteCheckpoints,
+  reverseGeocodePlaceName,
+  type GeocodedPlace,
+  type RoutePoint,
+  type TravelMode,
+} from '@/lib/route'
 
 export default function SessionNewPage() {
   const router = useRouter()
@@ -45,6 +51,14 @@ export default function SessionNewPage() {
   // not stored or sent anywhere else. Silently stays null if permission is
   // denied or unavailable; search just falls back to unbiased results.
   const [deviceLocation, setDeviceLocation] = useState<{ lat: number; lng: number } | null>(null)
+  // A suggested Start place built from the device's own position, offered
+  // rather than auto-filled - "fetch current location and ask if we have to
+  // start from there" - so typing a different start still works normally.
+  // Cleared once the user picks a start some other way, or dismisses it.
+  const [currentLocationSuggestion, setCurrentLocationSuggestion] = useState<GeocodedPlace | null>(
+    null
+  )
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false)
 
   useEffect(() => {
     if (!navigator.geolocation) return
@@ -58,6 +72,23 @@ export default function SessionNewPage() {
       { enableHighAccuracy: true, timeout: 8000 }
     )
   }, [])
+
+  useEffect(() => {
+    if (!deviceLocation) return
+    let cancelled = false
+    void reverseGeocodePlaceName(deviceLocation.lat, deviceLocation.lng).then((name) => {
+      if (cancelled) return
+      setCurrentLocationSuggestion({
+        id: 'current-location',
+        name: name ?? `${deviceLocation.lat.toFixed(5)}, ${deviceLocation.lng.toFixed(5)}`,
+        lat: deviceLocation.lat,
+        lng: deviceLocation.lng,
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [deviceLocation])
 
   // Takes an explicit mode instead of reading the travelMode state directly,
   // so it can be called immediately from the mode-toggle buttons with the
@@ -294,6 +325,34 @@ export default function SessionNewPage() {
                     for a longer route, fewer for a short one.
                   </p>
                 </div>
+                {currentLocationSuggestion && !selectedStartPlace && !routeStartPlace && !suggestionDismissed && (
+                  <div className="flex items-center justify-between gap-3 rounded-lg border border-beacon-amber/40 bg-beacon-amber/5 px-3 py-2">
+                    <p className="text-xs text-foreground">
+                      Use your current location as the start?{' '}
+                      <span className="text-muted-foreground">{currentLocationSuggestion.name}</span>
+                    </p>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRouteStartPlace(currentLocationSuggestion.name)
+                          setSelectedStartPlace(currentLocationSuggestion)
+                        }}
+                        className="rounded-md bg-beacon-amber px-2 py-1 text-xs font-semibold text-ink-indigo hover:bg-amber-500"
+                      >
+                        Use this
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSuggestionDismissed(true)}
+                        className="p-1 text-muted-foreground hover:text-foreground"
+                        aria-label="Dismiss suggestion"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <PlaceAutocomplete
                     label="Start place"
