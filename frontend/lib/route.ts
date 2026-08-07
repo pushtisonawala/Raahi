@@ -448,11 +448,27 @@ export async function getRouteCheckpoints(
     const stepRanges = buildStepRanges(steps)
     const samples = buildGeometrySamples(geometry)
 
-    let lastPickedDistance = 0
+    // Aim for one checkpoint roughly every CHECKPOINT_INTERVAL_METERS on a
+    // long route, but never zero on a short one just because it doesn't
+    // reach a full interval - a 400m route still deserves at least one
+    // checkpoint partway through. The previous version accumulated
+    // distance greedily and only placed a checkpoint once 800m had passed
+    // since the last one (or the start), which guaranteed *zero*
+    // intermediate checkpoints on any route shorter than 800m total, no
+    // matter how good the underlying sampling was - a spacing bug, not a
+    // naming or turn-count one. Evenly spacing a target count across the
+    // route's actual length fixes that for routes of any length.
+    const targetIntermediateCount = Math.min(
+      MAX_INTERMEDIATE_CHECKPOINTS,
+      Math.max(1, Math.round(totalMeters / CHECKPOINT_INTERVAL_METERS))
+    )
+    const pickInterval = totalMeters / (targetIntermediateCount + 1)
+
+    let nextPickDistance = pickInterval
     let intermediateIndex = 0
     for (const sample of samples) {
-      if (intermediateIndex >= MAX_INTERMEDIATE_CHECKPOINTS) break
-      if (sample.cumulativeDistance - lastPickedDistance < CHECKPOINT_INTERVAL_METERS) continue
+      if (intermediateIndex >= targetIntermediateCount) break
+      if (sample.cumulativeDistance < nextPickDistance) continue
 
       const rangeIndex = findStepRangeIndex(stepRanges, sample.cumulativeDistance)
       intermediateIndex += 1
@@ -478,7 +494,7 @@ export async function getRouteCheckpoints(
               1000
         ).toISOString(),
       })
-      lastPickedDistance = sample.cumulativeDistance
+      nextPickDistance += pickInterval
     }
   }
 
