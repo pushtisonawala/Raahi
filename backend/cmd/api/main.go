@@ -11,6 +11,8 @@ import (
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/api"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/sweeper"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/ws"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -36,10 +38,22 @@ func main() {
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
-		databaseURL = "postgres://raahi:raahi_dev@localhost:5432/raahi?sslmode=disable"
+		databaseURL = "postgres://raahi:raahi_dev@localhost:5433/raahi?sslmode=disable"
 	}
 	db.Connect(databaseURL)
 	go sweeper.Run(context.Background(), db.Pool)
+
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
+		redisURL = "redis://localhost:6379"
+	}
+	redisOptions, err := redis.ParseURL(redisURL)
+	if err != nil {
+		log.Fatalf("invalid REDIS_URL: %v", err)
+	}
+	redisClient := redis.NewClient(redisOptions)
+	ws.GlobalHub.SetRedis(redisClient)
+	go ws.GlobalHub.Run(context.Background())
 
 	defer db.Pool.Close()
 	db.Migrate()
