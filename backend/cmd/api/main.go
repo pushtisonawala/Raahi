@@ -5,11 +5,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/joho/godotenv"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/api"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/ratelimit"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/sweeper"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/ws"
 	"github.com/redis/go-redis/v9"
@@ -55,11 +57,18 @@ func main() {
 	ws.GlobalHub.SetRedis(redisClient)
 	go ws.GlobalHub.Run(context.Background())
 
+	// Separate Limiters (separate Redis key namespaces via the "name" tag
+	// in RateLimit) so a burst of signups can't eat into login's budget or
+	// vice versa. Login is the tighter of the two: it's the one an
+	// attacker actually gains something from brute-forcing.
+	loginLimiter := ratelimit.New(redisClient, 5, 5*time.Minute)
+	signupLimiter := ratelimit.New(redisClient, 3, time.Hour)
+
 	defer db.Pool.Close()
 	db.Migrate()
 
-	r.Post("/signup", api.SignupHandler)
-	r.Post("/login", api.LoginHandler)
+	r.With(api.RateLimit(signupLimiter, "signup")).Post("/signup", api.SignupHandler)
+	r.With(api.RateLimit(loginLimiter, "login")).Post("/login", api.LoginHandler)
 	r.Get("/sessions/{id}/ws", api.SessionWebSocketHandler)
 	r.With(api.RequireAuth).Post("/sessions/{id}/share", api.CreateShareLinkHandler)
 	r.Get("/share/{token}", api.GetSharedSessionHandler)

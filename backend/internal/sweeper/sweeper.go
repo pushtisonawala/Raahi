@@ -20,6 +20,7 @@ const (
 	// user-configurable, unlike the grace period below.
 	secondaryGracePeriod = 3 * time.Minute
 	tickInterval         = 15 * time.Second
+	sweeperLockKey = 727_100
 )
 
 func Run(ctx context.Context, pool *pgxpool.Pool) {
@@ -31,9 +32,45 @@ func Run(ctx context.Context, pool *pgxpool.Pool) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			sweepOnce(ctx, pool)
+			runIfLeader(ctx, pool)
 		}
 	}
+}
+
+func runIfLeader(ctx context.Context, pool *pgxpool.Pool) {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		log.Printf("sweeper: failed to acquire connection: %v", err)
+		return
+	}
+	defer conn.Release()
+
+	var acquired bool
+	err = conn.QueryRow(ctx,
+		`SELECT pg_try_advisory_lock($1)`,
+		sweeperLockKey,
+	).Scan(&acquired)
+
+	if err != nil {
+		log.Printf("sweeper: failed to acquire advisory lock: %v", err)
+		return
+	}
+
+	if !acquired {
+		return
+	}
+
+	defer func() {
+		var unlocked bool
+		if err := conn.QueryRow(ctx,
+			`SELECT pg_advisory_unlock($1)`,
+			sweeperLockKey,
+		).Scan(&unlocked); err != nil {
+			log.Printf("sweeper: failed to release advisory lock: %v", err)
+		}
+	}()
+
+	sweepOnce(ctx, pool)
 }
 func sweepOnce(ctx context.Context, pool *pgxpool.Pool) {
 	rows, err := pool.Query(ctx, `UPDATE checkpoints SET status='overdue' WHERE status='pending' AND expected_time IS NOT NULL AND expected_time <= now() RETURNING id, session_id`)
