@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -13,6 +15,34 @@ import (
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
+}
+func replayMissedEvents(ctx context.Context, conn *websocket.Conn, sessionID, sinceParam string) {
+	since, err := strconv.ParseInt(sinceParam, 10, 64)
+	if err != nil {
+		since = 0
+	}
+
+	rows, err := db.Pool.Query(ctx,
+		`SELECT payload FROM session_events WHERE session_id = $1 AND id > $2 ORDER BY id ASC`,
+		sessionID, since,
+	)
+	if err != nil {
+		log.Printf("ws: failed to query missed events for session %s: %v", sessionID, err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var payload []byte
+		if scanErr := rows.Scan(&payload); scanErr != nil {
+			log.Printf("ws: failed to scan missed event for session %s: %v", sessionID, scanErr)
+			continue
+		}
+		if writeErr := conn.WriteMessage(websocket.TextMessage, payload); writeErr != nil {
+			log.Printf("ws: failed to replay event to session %s: %v", sessionID, writeErr)
+			return
+		}
+	}
 }
 
 func SessionWebSocketHandler(w http.ResponseWriter, r *http.Request) {
@@ -28,6 +58,8 @@ func SessionWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("ws: client connected to session %s", sessionID)
 
 	defer ws.GlobalHub.Unregister(sessionID, conn)
+
+	replayMissedEvents(r.Context(), conn, sessionID, r.URL.Query().Get("since"))
 
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
@@ -61,6 +93,8 @@ func SharedSessionWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	ws.GlobalHub.Register(sessionID, conn)
 	log.Printf("ws: shared client connected to session %s", sessionID)
 	defer ws.GlobalHub.Unregister(sessionID, conn)
+
+	replayMissedEvents(r.Context(), conn, sessionID, r.URL.Query().Get("since"))
 
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/api"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/outbox"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/ratelimit"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/sweeper"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/ws"
@@ -44,6 +45,7 @@ func main() {
 	}
 	db.Connect(databaseURL)
 	go sweeper.Run(context.Background(), db.Pool)
+	go outbox.Run(context.Background(), db.Pool)
 
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {

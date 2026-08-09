@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -86,6 +87,23 @@ func (h *Hub) Broadcast(sessionId string, message interface{}) {
 		log.Printf("ws: failed to publish message: %v", err)
 	}
 }
+func (h *Hub) BroadcastDurable(ctx context.Context, sessionId string, eventType string, message interface{}) {
+	payload, err := json.Marshal(message)
+	if err != nil {
+		log.Printf("failed to marshal durable message: %v", err)
+		return
+	}
+
+	if _, err := db.Pool.Exec(ctx,
+		`INSERT INTO session_events (session_id, event_type, payload) VALUES ($1, $2, $3)`,
+		sessionId, eventType, payload,
+	); err != nil {
+		log.Printf("ws: failed to persist durable event: %v", err)
+	}
+
+	h.Broadcast(sessionId, message)
+}
+
 func (h *Hub) Run(ctx context.Context) {
 	if h.redis == nil {
 		log.Printf("ws: Redis client is not configured")

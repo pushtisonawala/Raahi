@@ -170,6 +170,51 @@ func Migrate() {
 
 		CREATE INDEX IF NOT EXISTS share_links_token_idx
 			ON share_links (token);
+
+		-- Transactional outbox: sweeper.go inserts a row here in the SAME
+		-- statement that flips a checkpoint's status (see the CTE pattern in
+		-- sweepOnce), so "the state changed" and "a side effect is now
+		-- guaranteed to eventually be delivered" become one atomic fact
+		-- instead of two separate steps where the second one could silently
+		-- fail and never be retried. internal/outbox is the only thing that
+		-- reads from this table.
+		CREATE TABLE IF NOT EXISTS outbox_events (
+			id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+			event_type TEXT NOT NULL,
+			payload JSONB NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			attempts INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT,
+			next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		-- Partial index: only rows the dispatcher will ever actually query
+		-- for ('pending' and due) are indexed, instead of indexing every row
+		-- including ones already 'delivered' or 'failed' that pile up over
+		-- time and are never looked up by status again.
+		CREATE INDEX IF NOT EXISTS outbox_events_pending_idx
+			ON outbox_events (next_attempt_at)
+			WHERE status = 'pending';
+
+		-- Durable, ordered log of the "must not silently miss this" events
+		-- for a session (checkpoint state changes, SOS, reroutes - NOT
+		-- routine progress/location pings, which are superseded by the next
+		-- one and never need replaying). id is a plain ever-increasing
+		-- sequence number: a reconnecting WebSocket client sends back the
+		-- highest id it already saw (?since=) and gets everything after
+		-- that replayed before switching to live delivery, instead of
+		-- whatever happened while it was disconnected just being gone.
+		CREATE TABLE IF NOT EXISTS session_events (
+			id BIGSERIAL PRIMARY KEY,
+			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			event_type TEXT NOT NULL,
+			payload JSONB NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE INDEX IF NOT EXISTS session_events_session_id_id_idx
+			ON session_events (session_id, id);
 	`
 
 	if _, err := Pool.Exec(context.Background(), schema); err != nil {

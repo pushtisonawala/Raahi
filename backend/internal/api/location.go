@@ -196,7 +196,7 @@ func updateLocationWithRouteProgress(
 	rows.Close()
 
 	for _, id := range reachedIDs {
-		ws.GlobalHub.Broadcast(sessionID, map[string]string{
+		ws.GlobalHub.BroadcastDurable(r.Context(), sessionID, "checkpoint_reached", map[string]string{
 			"type":          "checkpoint_reached",
 			"checkpoint_id": id,
 		})
@@ -252,7 +252,7 @@ func updateLocationWithRadiusFallback(r *http.Request, sessionID, userID string,
 			); err != nil {
 				return err
 			}
-			ws.GlobalHub.Broadcast(sessionID, map[string]string{
+			ws.GlobalHub.BroadcastDurable(r.Context(), sessionID, "checkpoint_reached", map[string]string{
 				"type":          "checkpoint_reached",
 				"checkpoint_id": checkpointID,
 			})
