@@ -215,6 +215,24 @@ func Migrate() {
 
 		CREATE INDEX IF NOT EXISTS session_events_session_id_id_idx
 			ON session_events (session_id, id);
+
+		-- Lets a client safely retry a risky POST (create session, trigger
+		-- SOS) after a dropped connection without redoing the work: the
+		-- client sends the same Idempotency-Key header on the retry, and
+		-- internal/api.Idempotency either replays the stored response or
+		-- rejects a concurrent duplicate, instead of the handler running
+		-- twice. Scoped to (user_id, key) rather than key alone, so one
+		-- user can never replay - even accidentally - a response meant for
+		-- another user's request.
+		CREATE TABLE IF NOT EXISTS idempotency_keys (
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			key TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'processing',
+			response_status INTEGER,
+			response_body BYTEA,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (user_id, key)
+		);
 	`
 
 	if _, err := Pool.Exec(context.Background(), schema); err != nil {

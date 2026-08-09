@@ -5,6 +5,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -43,9 +46,24 @@ func main() {
 	if databaseURL == "" {
 		databaseURL = "postgres://raahi:raahi_dev@localhost:5433/raahi?sslmode=disable"
 	}
+	rootCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var backgroundLoops sync.WaitGroup
+
 	db.Connect(databaseURL)
-	go sweeper.Run(context.Background(), db.Pool)
-	go outbox.Run(context.Background(), db.Pool)
+
+	backgroundLoops.Add(1)
+	go func() {
+		defer backgroundLoops.Done()
+		sweeper.Run(rootCtx, db.Pool)
+	}()
+
+	backgroundLoops.Add(1)
+	go func() {
+		defer backgroundLoops.Done()
+		outbox.Run(rootCtx, db.Pool)
+	}()
 
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
@@ -57,7 +75,12 @@ func main() {
 	}
 	redisClient := redis.NewClient(redisOptions)
 	ws.GlobalHub.SetRedis(redisClient)
-	go ws.GlobalHub.Run(context.Background())
+
+	backgroundLoops.Add(1)
+	go func() {
+		defer backgroundLoops.Done()
+		ws.GlobalHub.Run(rootCtx)
+	}()
 
 	// Separate Limiters (separate Redis key namespaces via the "name" tag
 	// in RateLimit) so a burst of signups can't eat into login's budget or
@@ -66,7 +89,6 @@ func main() {
 	loginLimiter := ratelimit.New(redisClient, 5, 5*time.Minute)
 	signupLimiter := ratelimit.New(redisClient, 3, time.Hour)
 
-	defer db.Pool.Close()
 	db.Migrate()
 
 	r.With(api.RateLimit(signupLimiter, "signup")).Post("/signup", api.SignupHandler)
@@ -79,17 +101,50 @@ func main() {
 	r.With(api.RequireAuth).Get("/contacts", api.ListContactHandler)
 	r.With(api.RequireAuth).Put("/contacts/{id}", api.UpdateContact)
 	r.With(api.RequireAuth).Delete("/contacts/{id}", api.DeleteContactHandler)
-	r.With(api.RequireAuth).Post("/sessions", api.CreateSessionHandler)
+	r.With(api.RequireAuth, api.Idempotency).Post("/sessions", api.CreateSessionHandler)
 	r.With(api.RequireAuth).Get("/sessions", api.ListSessionsHandler)
 	r.With(api.RequireAuth).Get("/sessions/{id}", api.GetSessionHandler)
 	r.With(api.RequireAuth).Post("/sessions/{id}/complete", api.CompleteSessionHandler)
 	r.With(api.RequireAuth).Post("/sessions/{id}/location", api.UpdateLocationHandler)
 	r.With(api.RequireAuth).Post("/sessions/{id}/reroute", api.RerouteSessionHandler)
-	r.With(api.RequireAuth).Post("/sessions/{id}/sos", api.TriggerSOSHandler)
+	r.With(api.RequireAuth, api.Idempotency).Post("/sessions/{id}/sos", api.TriggerSOSHandler)
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, r))
+
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: r,
+	}
+
+	go func() {
+		log.Printf("listening on :%s", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server failed: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+
+	log.Println("shutdown signal received, draining...")
+
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("server shutdown error: %v", err)
+	}
+
+	backgroundLoops.Wait()
+
+	db.Pool.Close()
+	if err := redisClient.Close(); err != nil {
+		log.Printf("redis client close error: %v", err)
+	}
+
+	log.Println("shutdown complete")
 }
