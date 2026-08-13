@@ -110,9 +110,24 @@ export function useSessionData(sessionId: string | undefined) {
 
     connect()
 
+    const catchUp = () => {
+      if (document.visibilityState !== 'visible') return
+      void loadSession()
+      if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+        if (reconnectTimer) clearTimeout(reconnectTimer)
+        connect()
+      }
+    }
+    document.addEventListener('visibilitychange', catchUp)
+    window.addEventListener('pageshow', catchUp)
+    window.addEventListener('focus', catchUp)
+
     return () => {
       disposed = true
       if (reconnectTimer) clearTimeout(reconnectTimer)
+      document.removeEventListener('visibilitychange', catchUp)
+      window.removeEventListener('pageshow', catchUp)
+      window.removeEventListener('focus', catchUp)
       socket?.close()
     }
   }, [loadSession, sessionId, token])
