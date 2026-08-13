@@ -421,7 +421,7 @@ func RerouteSessionHandler(w http.ResponseWriter, r *http.Request) {
 	ws.GlobalHub.BroadcastDurable(r.Context(), sessionID, "route_recalculated", map[string]interface{}{
 		"type": "route_recalculated",
 	})
-	ws.GlobalHub.Broadcast(sessionID, map[string]interface{}{
+	ws.GlobalHub.Broadcast(r.Context(), sessionID, map[string]interface{}{
 		"type":             "progress_update",
 		"progress_meters":  0,
 		"deviation_meters": 0,

@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"net"
@@ -10,6 +11,10 @@ import (
 	"time"
 
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/breaker"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const smtpTimeout = 10 * time.Second
@@ -22,10 +27,23 @@ const smtpTimeout = 10 * time.Second
 // function.
 var smtpBreaker = breaker.New(5, 1*time.Minute)
 
-func SendEmail(to string, subject string, plainBody string, htmlBody string) error {
-	return smtpBreaker.Call(func() error {
-		return sendEmailNow(to, subject, plainBody, htmlBody)
+func SendEmail(ctx context.Context, to string, subject string, plainBody string, htmlBody string) error {
+	ctx, span := telemetry.Tracer().Start(ctx, "smtp.send", trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+	span.SetAttributes(attribute.String("smtp.to", to))
+
+	err := smtpBreaker.Call(func() error {
+		return sendEmailNow(ctx, to, subject, plainBody, htmlBody)
 	})
+
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		if err == breaker.ErrOpen {
+			span.SetAttributes(attribute.Bool("breaker.open", true))
+		}
+	}
+	return err
 }
 
 // sendEmailNow is the actual SMTP conversation, reimplemented from what
@@ -34,7 +52,7 @@ func SendEmail(to string, subject string, plainBody string, htmlBody string) err
 // the TCP connection and then goes silent mid-conversation can hang the
 // caller indefinitely - exactly the failure mode that turned "email a
 // contact" into "the SOS button doesn't respond."
-func sendEmailNow(to string, subject string, plainBody string, htmlBody string) error {
+func sendEmailNow(ctx context.Context, to string, subject string, plainBody string, htmlBody string) error {
 	from := os.Getenv("SMTP_EMAIL")
 	password := os.Getenv("SMTP_PASSWORD")
 

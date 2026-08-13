@@ -202,7 +202,7 @@ func updateLocationWithRouteProgress(
 		})
 	}
 
-	ws.GlobalHub.Broadcast(sessionID, map[string]interface{}{
+	ws.GlobalHub.Broadcast(r.Context(), sessionID, map[string]interface{}{
 		"type":            "progress_update",
 		"progress_meters": newProgress,
 		"deviation_meters": deviation,

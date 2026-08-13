@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/telemetry"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/ws"
+	"go.opentelemetry.io/otel/codes"
 )
 
 const (
@@ -68,6 +70,15 @@ func runIfLeader(ctx context.Context, pool *pgxpool.Pool) {
 	sweepOnce(ctx, pool)
 }
 func sweepOnce(ctx context.Context, pool *pgxpool.Pool) {
+
+	ctx, span := telemetry.Tracer().Start(ctx, "sweeper.tick")
+	defer span.End()
+
+	traceContext, err := telemetry.InjectJSON(ctx)
+	if err != nil {
+		log.Printf("sweeper: failed to serialize trace context: %v", err)
+	}
+
 	rows, err := pool.Query(ctx, `
 		WITH newly_overdue AS (
 			UPDATE checkpoints
@@ -77,13 +88,15 @@ func sweepOnce(ctx context.Context, pool *pgxpool.Pool) {
 			  AND expected_time <= now()
 			RETURNING id, session_id
 		)
-		INSERT INTO outbox_events (event_type, payload)
-		SELECT 'overdue_email', jsonb_build_object('checkpoint_id', id, 'session_id', session_id)
+		INSERT INTO outbox_events (event_type, payload, trace_context)
+		SELECT 'overdue_email', jsonb_build_object('checkpoint_id', id, 'session_id', session_id), $1::jsonb
 		FROM newly_overdue
 		RETURNING payload ->> 'checkpoint_id', payload ->> 'session_id'
-	`)
+	`, traceContext)
 	if err != nil {
 		log.Printf("sweeper stage1 error: %v", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "stage1: "+err.Error())
 	} else {
 		for rows.Next() {
 			var id, sessionID string
@@ -118,6 +131,8 @@ func sweepOnce(ctx context.Context, pool *pgxpool.Pool) {
 		 RETURNING checkpoints.id, checkpoints.session_id`)
 	if err != nil {
 		log.Printf("sweeper stage2 error: %v", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "stage2: "+err.Error())
 	} else {
 		for rows.Next() {
 			var id, sessionID string
@@ -144,13 +159,15 @@ func sweepOnce(ctx context.Context, pool *pgxpool.Pool) {
 			  AND checkpoints.expected_time <= now() - (sessions.grace_period * interval '1 minute') - $1::interval
 			RETURNING checkpoints.id, checkpoints.session_id
 		)
-		INSERT INTO outbox_events (event_type, payload)
-		SELECT 'contact_alert_email', jsonb_build_object('checkpoint_id', id, 'session_id', session_id)
+		INSERT INTO outbox_events (event_type, payload, trace_context)
+		SELECT 'contact_alert_email', jsonb_build_object('checkpoint_id', id, 'session_id', session_id), $2::jsonb
 		FROM newly_escalated
 		RETURNING payload ->> 'checkpoint_id', payload ->> 'session_id'
-	`, secondaryGracePeriod)
+	`, secondaryGracePeriod, traceContext)
 	if err != nil {
 		log.Printf("sweeper stage3 error: %v", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "stage3: "+err.Error())
 	} else {
 		for rows.Next() {
 			var id, sessionID string

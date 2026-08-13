@@ -1,8 +1,27 @@
 services:
+  # All-in-one Jaeger: collector + query UI + in-memory storage in one
+  # container. Not meant for production (traces vanish on restart, no
+  # persistence, no scaling) - it exists purely so tracing has somewhere
+  # local to send spans to while developing. In production you'd point
+  # OTEL_EXPORTER_OTLP_ENDPOINT at a real backend (Grafana Tempo, Honeycomb,
+  # a managed Jaeger, etc) instead.
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    ports:
+      - "16686:16686" # web UI - http://localhost:16686
+      - "4318:4318"   # OTLP/HTTP receiver - what api's OTEL_EXPORTER_OTLP_ENDPOINT points at
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # host-side port only, changed from 6379 to dodge a local conflict -
+      # the api container still reaches this over the internal Docker
+      # network at redis:6379 regardless (see REDIS_URL below), so this
+      # only matters if you want to hit Redis from your host with
+      # redis-cli.
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -38,11 +57,14 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD}
       CORS_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,https://raahi-navy.vercel.app
       REDIS_URL: redis://redis:6379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      jaeger:
+        condition: service_started
 
 volumes:
   pgdata:

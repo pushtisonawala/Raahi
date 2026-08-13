@@ -10,6 +10,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/ratelimit"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type contextKey string
@@ -52,6 +54,8 @@ func RequireAuth(next http.Handler) http.Handler {
 			http.Error(w, "invalid token claims", http.StatusUnauthorized)
 			return
 		}
+
+		trace.SpanFromContext(r.Context()).SetAttributes(attribute.String("user.id", userID))
 
 		ctx := context.WithValue(r.Context(), userIDKey, userID)
 		next.ServeHTTP(w, r.WithContext(ctx))

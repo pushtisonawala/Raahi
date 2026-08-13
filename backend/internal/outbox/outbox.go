@@ -12,6 +12,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/notify"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/telemetry"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -35,10 +38,11 @@ func Run(ctx context.Context, pool *pgxpool.Pool) {
 }
 
 type claimedEvent struct {
-	id        string
-	eventType string
-	payload   json.RawMessage
-	attempts  int
+	id           string
+	eventType    string
+	payload      json.RawMessage
+	attempts     int
+	traceContext json.RawMessage
 }
 
 func dispatchBatch(ctx context.Context, pool *pgxpool.Pool) {
@@ -50,7 +54,7 @@ func dispatchBatch(ctx context.Context, pool *pgxpool.Pool) {
 	defer tx.Rollback(ctx)
 
 	rows, err := tx.Query(ctx, `
-		SELECT id, event_type, payload, attempts
+		SELECT id, event_type, payload, attempts, trace_context
 		FROM outbox_events
 		WHERE status = 'pending' AND next_attempt_at <= now()
 		ORDER BY next_attempt_at
@@ -65,7 +69,7 @@ func dispatchBatch(ctx context.Context, pool *pgxpool.Pool) {
 	var events []claimedEvent
 	for rows.Next() {
 		var e claimedEvent
-		if scanErr := rows.Scan(&e.id, &e.eventType, &e.payload, &e.attempts); scanErr != nil {
+		if scanErr := rows.Scan(&e.id, &e.eventType, &e.payload, &e.attempts, &e.traceContext); scanErr != nil {
 			log.Printf("outbox: failed to scan event: %v", scanErr)
 			continue
 		}
@@ -78,7 +82,17 @@ func dispatchBatch(ctx context.Context, pool *pgxpool.Pool) {
 	}
 
 	for _, e := range events {
-		deliverErr := deliver(ctx, e.eventType, e.payload)
+		eventCtx := telemetry.ExtractJSON(ctx, e.traceContext)
+		eventCtx, span := telemetry.Tracer().Start(eventCtx, "outbox.deliver "+e.eventType,
+			trace.WithSpanKind(trace.SpanKindConsumer))
+
+		deliverErr := deliver(eventCtx, e.eventType, e.payload)
+
+		if deliverErr != nil {
+			span.RecordError(deliverErr)
+			span.SetStatus(codes.Error, deliverErr.Error())
+		}
+		span.End()
 
 		if deliverErr == nil {
 			if _, err := tx.Exec(ctx, `UPDATE outbox_events SET status = 'delivered' WHERE id = $1`, e.id); err != nil {
@@ -214,7 +228,7 @@ func SendSOSEmails(ctx context.Context, sessionID string) error {
 		}
 		plainBody := "This is an emergency alert. Your contact has triggered SOS.\n\n" + plainLocationText
 		htmlBody := "<p>This is an emergency alert. Your contact has triggered SOS.</p><p>" + htmlLocationText + "</p>"
-		if err := notify.SendEmail(contactEmail, "SOS: your contact needs help now", plainBody, htmlBody); err != nil {
+		if err := notify.SendEmail(ctx, contactEmail, "SOS: your contact needs help now", plainBody, htmlBody); err != nil {
 			return err
 		}
 		sentCount++
@@ -281,7 +295,7 @@ func SendContactEmails(ctx context.Context, checkpointID string) error {
 			"<p>Please reach out and check on them.</p>",
 			"<p>", htmlLocationText, "</p>",
 		}, "")
-		if err := notify.SendEmail(contactEmail, "Checking in from Raahi", plainBody, htmlBody); err != nil {
+		if err := notify.SendEmail(ctx, contactEmail, "Checking in from Raahi", plainBody, htmlBody); err != nil {
 			return err
 		}
 		sentCount++
@@ -321,5 +335,5 @@ func SendOverdueEmail(ctx context.Context, checkpointID string) error {
 		checkpointName,
 	)
 
-	return notify.SendEmail(recipientEmail, subject, plainBody, htmlBody)
+	return notify.SendEmail(ctx, recipientEmail, subject, plainBody, htmlBody)
 }

@@ -8,7 +8,9 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/telemetry"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const wsBackplaneChannel = "raahi:ws-broadcast"
@@ -16,6 +18,7 @@ const wsBackplaneChannel = "raahi:ws-broadcast"
 type broadcastEnvelope struct {
 	SessionID string          `json:"session_id"`
 	Payload   json.RawMessage `json:"payload"`
+	TraceContext telemetry.Carrier `json:"trace_context,omitempty"`
 }
 
 type Hub struct {
@@ -63,27 +66,31 @@ func (h *Hub) deliverLocal(sessionId string, payload json.RawMessage) {
 	}
 }
 
-func (h *Hub) Broadcast(sessionId string, message interface{}) {
+
+func (h *Hub) Broadcast(ctx context.Context, sessionId string, message interface{}) {
+	ctx, span := telemetry.Tracer().Start(ctx, "ws.publish", trace.WithSpanKind(trace.SpanKindProducer))
+	defer span.End()
+
 	payload, err := json.Marshal(message)
 	if err != nil {
 		log.Printf("failed to marshal message: %v", err)
 		return
 	}
 	envelope := broadcastEnvelope{
-		SessionID: sessionId,
-		Payload:   payload,
+		SessionID:    sessionId,
+		Payload:      payload,
+		TraceContext: telemetry.Inject(ctx),
 	}
 	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil {
 		log.Printf("failed to marshal envelope: %v", err)
 		return
 	}
-	ctx := context.Background()
 	if h.redis == nil {
 		log.Printf("ws: Redis client is not configured")
 		return
 	}
-	if err := h.redis.Publish(ctx, wsBackplaneChannel, envelopeBytes).Err(); err != nil {
+	if err := h.redis.Publish(context.Background(), wsBackplaneChannel, envelopeBytes).Err(); err != nil {
 		log.Printf("ws: failed to publish message: %v", err)
 	}
 }
@@ -101,7 +108,7 @@ func (h *Hub) BroadcastDurable(ctx context.Context, sessionId string, eventType 
 		log.Printf("ws: failed to persist durable event: %v", err)
 	}
 
-	h.Broadcast(sessionId, message)
+	h.Broadcast(ctx, sessionId, message)
 }
 
 func (h *Hub) Run(ctx context.Context) {
@@ -127,7 +134,10 @@ func (h *Hub) Run(ctx context.Context) {
 				continue
 			}
 
+			deliverCtx := telemetry.Extract(context.Background(), envelope.TraceContext)
+			_, span := telemetry.Tracer().Start(deliverCtx, "ws.deliver", trace.WithSpanKind(trace.SpanKindConsumer))
 			h.deliverLocal(envelope.SessionID, envelope.Payload)
+			span.End()
 
 		}
 	}

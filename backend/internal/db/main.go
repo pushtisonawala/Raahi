@@ -10,7 +10,13 @@ import (
 var Pool *pgxpool.Pool
 
 func Connect(databaseURL string) {
-	pool, err := pgxpool.New(context.Background(), databaseURL)
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		log.Fatalf("invalid database url: %v", err)
+	}
+	config.ConnConfig.Tracer = otelQueryTracer{}
+
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		log.Fatalf("unable to connect to db: %v", err)
 
@@ -196,6 +202,19 @@ func Migrate() {
 		CREATE INDEX IF NOT EXISTS outbox_events_pending_idx
 			ON outbox_events (next_attempt_at)
 			WHERE status = 'pending';
+
+		-- Carries a serialized W3C traceparent (see internal/telemetry) from
+		-- whatever enqueued this event to the outbox dispatcher that
+		-- eventually delivers it, possibly seconds or minutes later in a
+		-- completely different goroutine. Without this, every trace would
+		-- dead-end at "inserted into outbox_events" - the actual email send
+		-- (and whether it succeeded) would be invisible from the request
+		-- that triggered it. NULL for rows enqueued before this column
+		-- existed, or by anything that hasn't been updated to inject it;
+		-- internal/outbox treats a missing value as "no parent span" rather
+		-- than an error.
+		ALTER TABLE outbox_events
+			ADD COLUMN IF NOT EXISTS trace_context JSONB;
 
 		-- Durable, ordered log of the "must not silently miss this" events
 		-- for a session (checkpoint state changes, SOS, reroutes - NOT

@@ -17,6 +17,7 @@ import (
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/outbox"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/ratelimit"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/sweeper"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/telemetry"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/ws"
 	"github.com/redis/go-redis/v9"
 )
@@ -36,6 +37,11 @@ func main() {
 	}
 
 	r := chi.NewRouter()
+	// Tracing first, CORS second: Tracing has to be outermost so the span
+	// it opens is the parent of literally everything else this request
+	// does (CORS handling, auth, the handler, every DB query the handler
+	// makes) - putting it anywhere else would leave those out of the trace.
+	r.Use(api.Tracing)
 	r.Use(api.CORS)
 	r.Get("/health", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -48,6 +54,16 @@ func main() {
 	}
 	rootCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Set up before anything that might create a span (db.Connect included -
+	// its pool is wired with a query tracer). Failure here logs and falls
+	// back to a no-op shutdown rather than log.Fatal: losing traces is a
+	// diagnostics problem, not a reason to take the whole API down.
+	shutdownTelemetry, err := telemetry.Init(rootCtx, "raahi-api")
+	if err != nil {
+		log.Printf("telemetry: init failed, continuing without tracing: %v", err)
+		shutdownTelemetry = func(context.Context) error { return nil }
+	}
 
 	var backgroundLoops sync.WaitGroup
 
@@ -144,6 +160,13 @@ func main() {
 	db.Pool.Close()
 	if err := redisClient.Close(); err != nil {
 		log.Printf("redis client close error: %v", err)
+	}
+
+	// Last, so it flushes spans from requests/background work that were
+	// still wrapping up during the drain above, not just ones finished
+	// before the shutdown signal arrived.
+	if err := shutdownTelemetry(context.Background()); err != nil {
+		log.Printf("telemetry shutdown error: %v", err)
 	}
 
 	log.Println("shutdown complete")
