@@ -1,6 +1,9 @@
 package api
 
 import (
+	"bufio"
+	"fmt"
+	"net"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -47,4 +50,21 @@ type statusRecorder struct {
 func (rec *statusRecorder) WriteHeader(status int) {
 	rec.status = status
 	rec.ResponseWriter.WriteHeader(status)
+}
+
+// Hijack lets statusRecorder pass through to the underlying connection's
+// http.Hijacker, which WebSocket upgrades require. Embedding
+// http.ResponseWriter above only promotes the three methods that interface
+// itself defines (Header/Write/WriteHeader) - it does not promote Hijack,
+// since that lives on the separate http.Hijacker interface. Without this,
+// gorilla/websocket's upgrader.Upgrade type-asserts for http.Hijacker on
+// this wrapper, finds it missing, and fails every single WebSocket upgrade
+// on every route this middleware wraps - which is every route, since
+// Tracing is registered globally in main.go.
+func (rec *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := rec.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not support hijacking")
+	}
+	return hijacker.Hijack()
 }
