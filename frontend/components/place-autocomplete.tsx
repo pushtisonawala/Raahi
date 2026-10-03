@@ -26,6 +26,11 @@ export function PlaceAutocomplete({
 }: PlaceAutocompleteProps) {
   const listboxId = useId()
   const requestIdRef = useRef(0)
+  // Picking a suggestion writes its full name into `value`, which would
+  // otherwise re-run the search below and pop the list open again over the
+  // rest of the form. Remember the picked text and skip searching for it.
+  const selectedValueRef = useRef<string | null>(null)
+  const focusedRef = useRef(false)
   const [suggestions, setSuggestions] = useState<GeocodedPlace[]>([])
   const [activeIndex, setActiveIndex] = useState(-1)
   const [loading, setLoading] = useState(false)
@@ -33,7 +38,7 @@ export function PlaceAutocomplete({
 
   useEffect(() => {
     const query = value.trim()
-    if (query.length < 3) {
+    if (query.length < 3 || value === selectedValueRef.current) {
       setSuggestions([])
       setLoading(false)
       return
@@ -48,7 +53,9 @@ export function PlaceAutocomplete({
         if (requestId !== requestIdRef.current) return
         setSuggestions(places)
         setActiveIndex(-1)
-        setOpen(true)
+        // Results can land after the user has tabbed or clicked away; only
+        // open the list if they're still in this field.
+        if (focusedRef.current) setOpen(true)
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return
         if (requestId === requestIdRef.current) setSuggestions([])
@@ -65,6 +72,7 @@ export function PlaceAutocomplete({
   }, [value, near?.lat, near?.lng])
 
   const selectPlace = (place: GeocodedPlace) => {
+    selectedValueRef.current = place.name
     onSelect(place)
     setSuggestions([])
     setOpen(false)
@@ -89,11 +97,18 @@ export function PlaceAutocomplete({
           aria-activedescendant={activeIndex >= 0 ? `${listboxId}-${activeIndex}` : undefined}
           value={value}
           onChange={(event) => {
+            selectedValueRef.current = null
             onValueChange(event.target.value)
             setOpen(true)
           }}
-          onFocus={() => suggestions.length > 0 && setOpen(true)}
-          onBlur={() => setOpen(false)}
+          onFocus={() => {
+            focusedRef.current = true
+            if (suggestions.length > 0) setOpen(true)
+          }}
+          onBlur={() => {
+            focusedRef.current = false
+            setOpen(false)
+          }}
           onKeyDown={(event) => {
             if (!open || suggestions.length === 0) return
             if (event.key === 'ArrowDown') {

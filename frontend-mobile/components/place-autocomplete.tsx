@@ -36,13 +36,17 @@ export function PlaceAutocomplete({
   near,
 }: PlaceAutocompleteProps) {
   const requestIdRef = useRef(0)
+  // Picking a suggestion writes its full name into `value`, which would
+  // otherwise re-run the search and reopen the list. Skip searching for it.
+  const selectedValueRef = useRef<string | null>(null)
+  const focusedRef = useRef(false)
   const [suggestions, setSuggestions] = useState<GeocodedPlace[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
 
   useEffect(() => {
     const query = value.trim()
-    if (query.length < 3) {
+    if (query.length < 3 || value === selectedValueRef.current) {
       setSuggestions([])
       setLoading(false)
       return undefined
@@ -56,7 +60,7 @@ export function PlaceAutocomplete({
         const places = await searchPlaces(query, controller.signal, near)
         if (requestId !== requestIdRef.current) return
         setSuggestions(places)
-        setOpen(true)
+        if (focusedRef.current) setOpen(true)
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return
         if (requestId === requestIdRef.current) setSuggestions([])
@@ -73,6 +77,7 @@ export function PlaceAutocomplete({
   }, [value, near?.lat, near?.lng])
 
   const selectPlace = (place: GeocodedPlace) => {
+    selectedValueRef.current = place.name
     onSelect(place)
     setSuggestions([])
     setOpen(false)
@@ -86,11 +91,18 @@ export function PlaceAutocomplete({
         <TextInput
           value={value}
           onChangeText={(text) => {
+            selectedValueRef.current = null
             onValueChange(text)
             setOpen(true)
           }}
-          onFocus={() => suggestions.length > 0 && setOpen(true)}
-          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onFocus={() => {
+            focusedRef.current = true
+            if (suggestions.length > 0) setOpen(true)
+          }}
+          onBlur={() => {
+            focusedRef.current = false
+            setTimeout(() => setOpen(false), 150)
+          }}
           placeholder={placeholder}
           placeholderTextColor={colors.mutedForeground}
           style={styles.input}
