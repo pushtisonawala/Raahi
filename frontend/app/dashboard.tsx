@@ -2,17 +2,51 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { AlertCircle, ArrowRight, LoaderCircle, MapPin, RefreshCw } from 'lucide-react'
 import { Header } from '@/components/header'
 import { SOSButton } from '@/components/sos-button'
 import { StatusBadge } from '@/components/status-badge'
 import { BeaconDot } from '@/components/beacon-dot'
 import { useContacts, useSessions } from '@/lib/hooks'
+import { apiFetch } from '@/lib/api'
+import { useAuth } from '@/lib/auth-context'
 
 export function Dashboard() {
   const { contacts, loading: contactsLoading, error: contactsError, refresh } = useContacts()
   const { sessions, loading: sessionsLoading, error: sessionsError } = useSessions()
   const [mounted, setMounted] = useState(false)
+  const { token } = useAuth()
+  const router = useRouter()
+  const [isSendingSOS, setIsSendingSOS] = useState(false)
+  const [sosError, setSosError] = useState<string | null>(null)
+
+  // SOS is tied to a session on the backend (it alerts that session's
+  // contacts with its last known location), so the home-screen button only
+  // works when there's an active session to raise it on.
+  const activeSession = sessions.find((session) => session.status === 'active')
+
+  const handleSOS = async () => {
+    if (!activeSession || isSendingSOS) return
+    setIsSendingSOS(true)
+    setSosError(null)
+    try {
+      await apiFetch(
+        `/sessions/${encodeURIComponent(activeSession.id)}/sos`,
+        { method: 'POST' },
+        token
+      )
+      // The active session page shows the SOS confirmation.
+      router.push(`/session/active/${activeSession.id}`)
+    } catch (error) {
+      setSosError(
+        error instanceof Error
+          ? error.message
+          : 'Could not reach the server. Check your connection and try again.'
+      )
+      setIsSendingSOS(false)
+    }
+  }
 
   useEffect(() => {
     setMounted(true)
@@ -162,11 +196,16 @@ export function Dashboard() {
         </section>
       </div>
 
-      <SOSButton
-        onTrigger={() => {
-          console.log('[v0] SOS button triggered')
-        }}
-      />
+      {activeSession && (
+        <>
+          {sosError && (
+            <p className="fixed bottom-24 right-6 max-w-xs rounded-md bg-alert-coral/10 px-3 py-2 text-sm text-alert-coral">
+              {sosError}
+            </p>
+          )}
+          <SOSButton onTrigger={() => void handleSOS()} disabled={isSendingSOS} />
+        </>
+      )}
     </div>
   )
 }

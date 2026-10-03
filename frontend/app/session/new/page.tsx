@@ -45,6 +45,9 @@ export default function SessionNewPage() {
     trafficBufferApplied: boolean
   } | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  // One key per visit to this page: a retried or double-tapped "Start
+  // session" replays the first response instead of creating a second session.
+  const [idempotencyKey] = useState(() => crypto.randomUUID())
   const [submitError, setSubmitError] = useState<string | null>(null)
   // The device's own position, used only to bias place search results
   // toward wherever the user actually is (see lib/route.ts#searchPlaces) -
@@ -198,6 +201,7 @@ export default function SessionNewPage() {
         '/sessions',
         {
           method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey },
           body: JSON.stringify({
             name: sessionName,
             route,
@@ -227,10 +231,18 @@ export default function SessionNewPage() {
         token
       )
       const created = (await response.json()) as { id: string }
-      router.push(`/session/active/${created.id}`)
+      const activePath = `/session/active/${created.id}`
+      // Stay in the submitting state on success so the button can't be
+      // pressed again while we navigate away.
+      router.replace(activePath)
+      // The client-side navigation was observed getting cancelled in
+      // production, leaving the user on this step with a session already
+      // created. If we haven't left this page shortly, do a full load.
+      setTimeout(() => {
+        if (window.location.pathname !== activePath) window.location.assign(activePath)
+      }, 1500)
     } catch (cause) {
       setSubmitError(cause instanceof Error ? cause.message : 'Unable to start the session.')
-    } finally {
       setIsSubmitting(false)
     }
   }
