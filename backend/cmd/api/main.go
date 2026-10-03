@@ -14,6 +14,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/api"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/db"
+	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/notify"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/outbox"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/ratelimit"
 	"github.com/pushtisonawala/raahi-personal-safety-app/backend/internal/sweeper"
@@ -32,8 +33,13 @@ func main() {
 	// functions just no-op, and SOS emails fail deep inside notify.SendEmail
 	// with only a per-request log line easy to miss. This one is impossible
 	// to miss in the boot log.
-	if os.Getenv("SMTP_EMAIL") == "" || os.Getenv("SMTP_PASSWORD") == "" {
-		log.Println("WARNING: SMTP_EMAIL and/or SMTP_PASSWORD are not set - SOS alerts and check-in emails will NOT be sent. Set them in your hosting provider's environment variables (not just a local .env file).")
+	switch notify.Provider() {
+	case "":
+		log.Println("WARNING: no email provider configured - SOS alerts and check-in emails will NOT be sent. Set BREVO_API_KEY + EMAIL_FROM (or SMTP_EMAIL + SMTP_PASSWORD for local dev) in your hosting provider's environment variables.")
+	case "smtp":
+		log.Println("email: using SMTP. Many hosts (including Render's free tier) block outbound SMTP ports; set BREVO_API_KEY + EMAIL_FROM to send over HTTPS instead.")
+	default:
+		log.Printf("email: using %s", notify.Provider())
 	}
 
 	r := chi.NewRouter()

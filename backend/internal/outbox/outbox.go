@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"time"
 
@@ -187,11 +186,9 @@ func deliver(ctx context.Context, eventType string, payload json.RawMessage) err
 // time instead of trusting anything captured when the event was queued, so
 // the location sent is whatever's true right now, not a stale snapshot.
 func SendSOSEmails(ctx context.Context, sessionID string) error {
-	from := os.Getenv("SMTP_EMAIL")
-	password := os.Getenv("SMTP_PASSWORD")
-	if from == "" || password == "" {
-		log.Printf("outbox: SMTP not configured, skipping SOS email for session %s", sessionID)
-		return nil
+	if notify.Provider() == "" {
+		log.Printf("outbox: email not configured, cannot send SOS email for session %s", sessionID)
+		return notify.ErrNotConfigured
 	}
 
 	var userID string
@@ -241,11 +238,9 @@ func SendSOSEmails(ctx context.Context, sessionID string) error {
 }
 
 func SendContactEmails(ctx context.Context, checkpointID string) error {
-	from := os.Getenv("SMTP_EMAIL")
-	password := os.Getenv("SMTP_PASSWORD")
-	if from == "" || password == "" {
-		log.Printf("outbox: SMTP not configured, skipping contact-alert email for checkpoint %s", checkpointID)
-		return nil
+	if notify.Provider() == "" {
+		log.Printf("outbox: email not configured, cannot send contact-alert email for checkpoint %s", checkpointID)
+		return notify.ErrNotConfigured
 	}
 
 	var checkpointName string
@@ -308,11 +303,9 @@ func SendContactEmails(ctx context.Context, checkpointID string) error {
 }
 
 func SendOverdueEmail(ctx context.Context, checkpointID string) error {
-	from := os.Getenv("SMTP_EMAIL")
-	password := os.Getenv("SMTP_PASSWORD")
-	if from == "" || password == "" {
-		log.Printf("outbox: SMTP not configured, skipping overdue email for checkpoint %s", checkpointID)
-		return nil
+	if notify.Provider() == "" {
+		log.Printf("outbox: email not configured, cannot send overdue email for checkpoint %s", checkpointID)
+		return notify.ErrNotConfigured
 	}
 
 	var recipientEmail, checkpointName string

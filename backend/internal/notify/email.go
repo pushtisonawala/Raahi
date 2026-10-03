@@ -1,10 +1,15 @@
 package notify
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/smtp"
 	"os"
 	"strings"
@@ -27,14 +32,55 @@ const smtpTimeout = 10 * time.Second
 // function.
 var smtpBreaker = breaker.New(5, 1*time.Minute)
 
+// ErrNotConfigured is returned when no email provider is set up. It is a
+// real error, not a silent no-op: an SOS that can't be delivered has to
+// stay visible in outbox_events (retried, then dead-lettered with this as
+// last_error) instead of being marked delivered.
+var ErrNotConfigured = errors.New("email not configured: set BREVO_API_KEY + EMAIL_FROM, or SMTP_EMAIL + SMTP_PASSWORD")
+
+// Provider reports which transport SendEmail will use: "brevo", "smtp",
+// or "" when nothing is configured.
+//
+// Brevo goes over HTTPS (port 443). It exists because many hosts - Render's
+// free tier included - block outbound SMTP ports (25/465/587), so a Gmail
+// SMTP setup that works locally times out in production while the outbox
+// keeps retrying. SMTP stays as the local-dev fallback.
+func Provider() string {
+	if os.Getenv("BREVO_API_KEY") != "" && senderAddress() != "" {
+		return "brevo"
+	}
+	if os.Getenv("SMTP_EMAIL") != "" && os.Getenv("SMTP_PASSWORD") != "" {
+		return "smtp"
+	}
+	return ""
+}
+
+func senderAddress() string {
+	if from := os.Getenv("EMAIL_FROM"); from != "" {
+		return from
+	}
+	return os.Getenv("SMTP_EMAIL")
+}
+
 func SendEmail(ctx context.Context, to string, subject string, plainBody string, htmlBody string) error {
 	ctx, span := telemetry.Tracer().Start(ctx, "smtp.send", trace.WithSpanKind(trace.SpanKindClient))
 	defer span.End()
-	span.SetAttributes(attribute.String("smtp.to", to))
+	provider := Provider()
+	span.SetAttributes(attribute.String("smtp.to", to), attribute.String("email.provider", provider))
 
-	err := smtpBreaker.Call(func() error {
-		return sendEmailNow(ctx, to, subject, plainBody, htmlBody)
-	})
+	var err error
+	switch provider {
+	case "brevo":
+		err = smtpBreaker.Call(func() error {
+			return sendViaBrevo(ctx, to, subject, plainBody, htmlBody)
+		})
+	case "smtp":
+		err = smtpBreaker.Call(func() error {
+			return sendEmailNow(ctx, to, subject, plainBody, htmlBody)
+		})
+	default:
+		err = ErrNotConfigured
+	}
 
 	if err != nil {
 		span.RecordError(err)
@@ -137,4 +183,42 @@ func sendEmailNow(ctx context.Context, to string, subject string, plainBody stri
 	}
 
 	return client.Quit()
+}
+
+var brevoClient = &http.Client{Timeout: smtpTimeout}
+
+// sendViaBrevo sends through Brevo's transactional email API over HTTPS.
+// The sender (EMAIL_FROM) must be a verified sender in the Brevo account.
+func sendViaBrevo(ctx context.Context, to string, subject string, plainBody string, htmlBody string) error {
+	payload := map[string]any{
+		"sender":      map[string]string{"name": "Raahi", "email": senderAddress()},
+		"to":          []map[string]string{{"email": to}},
+		"subject":     subject,
+		"htmlContent": htmlBody,
+		"textContent": plainBody,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("brevo encode: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.brevo.com/v3/smtp/email", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("brevo request: %w", err)
+	}
+	req.Header.Set("api-key", os.Getenv("BREVO_API_KEY"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := brevoClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("brevo send: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("brevo send: status %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+	}
+	return nil
 }
